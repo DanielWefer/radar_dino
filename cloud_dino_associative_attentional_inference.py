@@ -231,9 +231,12 @@ def extract_features(model, data_loader, use_cuda=True):
 
     return features, file_names, attentional_maps
 
-class ReturnIndexDataset(ImageFolderWithPaths):
+class ReturnIndexDataset(utils.UnlabeledImageDataset):
+    def __init__(self, root, transform=None):
+        super().__init__(root, transform=transform, return_paths=True)
+
     def __getitem__(self, idx):
-        img, lab, path = super(ReturnIndexDataset, self).__getitem__(idx)
+        img, _, path = super(ReturnIndexDataset, self).__getitem__(idx)
         return img, idx, path
 
 if __name__ == '__main__':
@@ -254,7 +257,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
-    parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+    parser.add_argument("--local_rank", "--local-rank", default=0, type=int, help="Please ignore and do not set this argument.")
     parser.add_argument('--data_path', default='/path/to/sky_images/', type=str)
     parser.add_argument('--inference_up_to', default=None, type=int, help='Inference up to n samples from the complete dataset')
     args = parser.parse_args()

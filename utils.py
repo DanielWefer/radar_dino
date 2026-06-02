@@ -30,7 +30,43 @@ import numpy as np
 import torch
 from torch import nn
 import torch.distributed as dist
-from PIL import ImageFilter, ImageOps
+from PIL import Image, ImageFilter, ImageOps
+
+
+IMG_EXTENSIONS = (".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp")
+
+
+class UnlabeledImageDataset(torch.utils.data.Dataset):
+    """Load images recursively without requiring ImageFolder class directories."""
+
+    def __init__(self, root, transform=None, return_paths=False):
+        self.root = root
+        self.transform = transform
+        self.return_paths = return_paths
+        self.samples = sorted(
+            os.path.join(dirpath, filename)
+            for dirpath, _, filenames in os.walk(root)
+            for filename in filenames
+            if filename.lower().endswith(IMG_EXTENSIONS)
+        )
+        if not self.samples:
+            raise FileNotFoundError(
+                f"Found no valid image files under {root}. "
+                f"Supported extensions are: {', '.join(IMG_EXTENSIONS)}"
+            )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path = self.samples[index]
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+        if self.transform is not None:
+            img = self.transform(img)
+        if self.return_paths:
+            return img, 0, path
+        return img, 0
 
 
 class GaussianBlur(object):
@@ -70,7 +106,7 @@ class Solarization(object):
 
 def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_name, patch_size):
     if os.path.isfile(pretrained_weights):
-        state_dict = torch.load(pretrained_weights, map_location="cpu")
+        state_dict = torch.load(pretrained_weights, map_location="cpu", weights_only=False)
         if checkpoint_key is not None and checkpoint_key in state_dict:
             print(f"Take key {checkpoint_key} in provided checkpoint dict")
             state_dict = state_dict[checkpoint_key]
@@ -158,7 +194,7 @@ def restart_from_checkpoint(ckp_path, run_variables=None, **kwargs):
     print("Found checkpoint at {}".format(ckp_path))
 
     # open checkpoint file
-    checkpoint = torch.load(ckp_path, map_location="cpu")
+    checkpoint = torch.load(ckp_path, map_location="cpu", weights_only=False)
 
     # key is what to look for in the checkpoint file
     # value is the object to load
