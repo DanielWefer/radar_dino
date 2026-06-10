@@ -18,16 +18,15 @@ import datetime
 import time
 import math
 import json
+import random
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
-from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
 
 import utils
@@ -39,7 +38,7 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
     and callable(torchvision_models.__dict__[name]))
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Cloud-DINO', add_help=False)
+    parser = argparse.ArgumentParser('Radar-DINO', add_help=False)
 
     # Model parameters
     parser.add_argument('--arch', default='vit_small', type=str,
@@ -47,15 +46,13 @@ def get_args_parser():
                 + torchvision_archs + torch.hub.list("facebookresearch/xcit:main"),
         help="""Name of architecture to train. For quick experiments with ViTs,
         we recommend using vit_tiny or vit_small.""")
-    parser.add_argument('--patch_size', default=16, type=int, help="""Size in pixels
-        of input square patches - default 16 (for 16x16 patches). Using smaller
-        values leads to better performance but requires more memory. Applies only
-        for ViTs (vit_tiny, vit_small and vit_base). If <16, we recommend disabling
-        mixed precision training (--use_fp16 false) to avoid unstabilities.""")
+    parser.add_argument('--patch_size', default=5, type=int, help="""Patch size in grid cells.
+        KHTX gridnc files are on a 1 km grid, so the default 5 creates 5x5 km patches.
+        Applies only for ViTs (vit_tiny, vit_small and vit_base).""")
     parser.add_argument('--out_dim', default=65536, type=int, help="""Dimensionality of
-        the Cloud-DINO head output. For complex and large datasets large values (like 65k) work well.""")
+        the Radar-DINO head output. For complex and large datasets large values (like 65k) work well.""")
     parser.add_argument('--norm_last_layer', default=True, type=utils.bool_flag,
-        help="""Whether or not to weight normalize the last layer of the Cloud-DINO head.
+        help="""Whether or not to weight normalize the last layer of the Radar-DINO head.
         Not normalizing leads to better performance but can make the training unstable.
         In our experiments, we typically set this paramater to False with vit_small and True with vit_base.""")
     parser.add_argument('--momentum_teacher', default=0.996, type=float, help="""Base EMA
@@ -113,12 +110,27 @@ def get_args_parser():
         local views to generate. Set this parameter to 0 to disable multi-crop training.
         When disabling multi-crop we recommend to use "--global_crops_scale 0.14 1." """)
     parser.add_argument('--local_crops_scale', type=float, nargs='+', default=(0.05, 0.4),
-        help="""Scale range of the cropped image before resizing, relatively to the origin image.
-        Used for small local view cropping of multi-crop.""")
+        help="""Legacy scale range retained for CLI compatibility; Radar-DINO uses fixed physical crop sizes.""")
+    parser.add_argument('--global_crop_size_km', default=300.0, type=float,
+        help='Physical width of global radar crops in km.')
+    parser.add_argument('--local_crop_size_km', default=100.0, type=float,
+        help='Physical width of local radar crops in km.')
+    parser.add_argument('--grid_spacing_km', default=1.0, type=float,
+        help='Horizontal grid spacing in km. KHTX gridnc is 1 km.')
+    parser.add_argument('--channel_nan_prob', default=0.1, type=float,
+        help='Probability that a crop has one randomly selected radar channel set to the NaN sentinel.')
 
     # Misc
-    parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
-        help='Please specify path to the ImageNet training data.')
+    parser.add_argument('--data_path', default='../radar_dino_test/KHTX/gridnc', type=str,
+        help='Path to regridded radar NetCDF files.')
+    parser.add_argument('--radar_fields', default=['reflectivity'], nargs='+', type=str,
+        help='Radar variable names to stack as input channels.')
+    parser.add_argument('--z_level', default='1000.0', type=str,
+        help='Altitude in meters to select from 3D radar grids. Use --z_level none for column max.')
+    parser.add_argument('--radar_nan_fill', default=-1.0, type=float,
+        help='Normalized sentinel value assigned where a selected radar field contains NaNs.')
+    parser.add_argument('--in_chans', default=None, type=int,
+        help='Number of input channels for ViT patch embedding. Defaults to len(--radar_fields).')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=1, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -129,7 +141,7 @@ def get_args_parser():
     return parser
 
 
-def train_cloud_dino(args):
+def train_radar_dino(args):
     utils.init_distributed_mode(args)
     utils.fix_random_seeds(args.seed)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -137,12 +149,23 @@ def train_cloud_dino(args):
     cudnn.benchmark = True
 
     # ============ preparing data ... ============
-    transform = DataAugmentationCloudDINO(
-        args.global_crops_scale,
-        args.local_crops_scale,
+    transform = DataAugmentationRadarDINO(
+        args.global_crop_size_km,
+        args.local_crop_size_km,
+        args.grid_spacing_km,
+        args.patch_size,
         args.local_crops_number,
+        args.radar_nan_fill,
+        args.channel_nan_prob,
     )
-    dataset = utils.UnlabeledImageDataset(args.data_path, transform=transform)
+    z_level = None if args.z_level.lower() == "none" else float(args.z_level)
+    dataset = utils.UnlabeledRadarNetCDFDataset(
+        args.data_path,
+        fields=args.radar_fields,
+        z_level=z_level,
+        transform=transform,
+        nan_fill=args.radar_nan_fill,
+    )
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,
@@ -152,18 +175,21 @@ def train_cloud_dino(args):
         pin_memory=True,
         drop_last=True,
     )
-    print(f"Data loaded: there are {len(dataset)} images.")
+    print(f"Data loaded: there are {len(dataset)} radar NetCDF files.")
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
     args.arch = args.arch.replace("deit", "vit")
+    if args.in_chans is None:
+        args.in_chans = len(args.radar_fields)
     # if the network is a Vision Transformer (i.e. vit_tiny, vit_small, vit_base)
     if args.arch in vits.__dict__.keys():
         student = vits.__dict__[args.arch](
             patch_size=args.patch_size,
+            in_chans=args.in_chans,
             drop_path_rate=args.drop_path_rate,  # stochastic depth
         )
-        teacher = vits.__dict__[args.arch](patch_size=args.patch_size)
+        teacher = vits.__dict__[args.arch](patch_size=args.patch_size, in_chans=args.in_chans)
         embed_dim = student.embed_dim
     # if the network is a XCiT
     elif args.arch in torch.hub.list("facebookresearch/xcit:main"):
@@ -212,7 +238,7 @@ def train_cloud_dino(args):
     print(f"Student and Teacher are built: they are both {args.arch} network.")
 
     # ============ preparing loss ... ============
-    cloud_dino_loss = CloudDINOLoss(
+    radar_dino_loss = RadarDINOLoss(
         args.out_dim,
         args.local_crops_number + 2,  # total number of crops = 2 global crops + local_crops_number
         args.warmup_teacher_temp,
@@ -260,17 +286,17 @@ def train_cloud_dino(args):
         teacher=teacher,
         optimizer=optimizer,
         fp16_scaler=fp16_scaler,
-        cloud_dino_loss=cloud_dino_loss,
+        radar_dino_loss=radar_dino_loss,
     )
     start_epoch = to_restore["epoch"]
 
     start_time = time.time()
-    print("Starting Cloud-DINO training !")
+    print("Starting Radar-DINO training !")
     for epoch in range(start_epoch, args.epochs):
         data_loader.sampler.set_epoch(epoch)
 
-        # ============ training one epoch of CloudDINO ... ============
-        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, cloud_dino_loss,
+        # ============ training one epoch of Radar-DINO ... ============
+        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, radar_dino_loss,
             data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
             epoch, fp16_scaler, args)
 
@@ -281,7 +307,7 @@ def train_cloud_dino(args):
             'optimizer': optimizer.state_dict(),
             'epoch': epoch + 1,
             'args': args,
-            'cloud_dino_loss': cloud_dino_loss.state_dict(),
+            'radar_dino_loss': radar_dino_loss.state_dict(),
         }
         if fp16_scaler is not None:
             save_dict['fp16_scaler'] = fp16_scaler.state_dict()
@@ -298,7 +324,7 @@ def train_cloud_dino(args):
     print('Training time {}'.format(total_time_str))
 
 
-def train_one_epoch(student, teacher, teacher_without_ddp, cloud_dino_loss, data_loader,
+def train_one_epoch(student, teacher, teacher_without_ddp, radar_dino_loss, data_loader,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -313,11 +339,11 @@ def train_one_epoch(student, teacher, teacher_without_ddp, cloud_dino_loss, data
 
         # move images to gpu
         images = [im.cuda(non_blocking=True) for im in images]
-        # teacher and student forward passes + compute cloud_dino loss
+        # teacher and student forward passes + compute Radar-DINO loss
         with torch.cuda.amp.autocast(fp16_scaler is not None):
             teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
             student_output = student(images)
-            loss = cloud_dino_loss(student_output, teacher_output, epoch)
+            loss = radar_dino_loss(student_output, teacher_output, epoch)
 
         if not math.isfinite(loss.item()):
             print("Loss is {}, stopping training".format(loss.item()), force=True)
@@ -360,7 +386,7 @@ def train_one_epoch(student, teacher, teacher_without_ddp, cloud_dino_loss, data
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-class CloudDINOLoss(nn.Module):
+class RadarDINOLoss(nn.Module):
     def __init__(self, out_dim, ncrops, warmup_teacher_temp, teacher_temp,
                  warmup_teacher_temp_epochs, nepochs, student_temp=0.1,
                  center_momentum=0.9):
@@ -416,56 +442,74 @@ class CloudDINOLoss(nn.Module):
         self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
 
 
-class DataAugmentationCloudDINO(object):
-    def __init__(self, global_crops_scale, local_crops_scale, local_crops_number):
-        flip_and_color_jitter = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1)],
-                p=0.8
-            ),
-            transforms.RandomGrayscale(p=0.2),
-        ])
-        normalize = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-        ])
-
-        # first global crop
-        self.global_transfo1 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(1.0),
-            normalize,
-        ])
-        # second global crop
-        self.global_transfo2 = transforms.Compose([
-            transforms.RandomResizedCrop(224, scale=global_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(0.1),
-            utils.Solarization(0.2),
-            normalize,
-        ])
-        # transformation for the local small crops
+class DataAugmentationRadarDINO(object):
+    def __init__(
+        self,
+        global_crop_size_km,
+        local_crop_size_km,
+        grid_spacing_km,
+        patch_size,
+        local_crops_number,
+        nan_fill,
+        channel_nan_prob,
+    ):
+        self.global_crop_size = self._crop_size_pixels(global_crop_size_km, grid_spacing_km, patch_size)
+        self.local_crop_size = self._crop_size_pixels(local_crop_size_km, grid_spacing_km, patch_size)
         self.local_crops_number = local_crops_number
-        self.local_transfo = transforms.Compose([
-            transforms.RandomResizedCrop(96, scale=local_crops_scale, interpolation=Image.BICUBIC),
-            flip_and_color_jitter,
-            utils.GaussianBlur(p=0.5),
-            normalize,
-        ])
+        self.nan_fill = nan_fill
+        self.channel_nan_prob = channel_nan_prob
 
     def __call__(self, image):
         crops = []
-        crops.append(self.global_transfo1(image))
-        crops.append(self.global_transfo2(image))
+        crops.append(self._make_crop(image, self.global_crop_size, noise_std=0.0))
+        crops.append(self._make_crop(image, self.global_crop_size, noise_std=0.02))
         for _ in range(self.local_crops_number):
-            crops.append(self.local_transfo(image))
+            crops.append(self._make_crop(image, self.local_crop_size, noise_std=0.01))
         return crops
+
+    def _make_crop(self, image, crop_size, noise_std):
+        crop = self._random_crop(image, crop_size)
+        crop = self._random_flip(crop)
+        missing = crop < 0.0
+        if noise_std > 0 and random.random() < 0.5:
+            noise = torch.randn_like(crop) * noise_std
+            crop = torch.where(missing, crop, crop + noise)
+        crop = torch.where(missing, crop, crop.clamp(0.0, 1.0))
+        return self._random_channel_nan(crop)
+
+    def _random_channel_nan(self, crop):
+        if self.channel_nan_prob <= 0 or random.random() >= self.channel_nan_prob:
+            return crop
+        crop = crop.clone()
+        channel = random.randrange(crop.shape[0])
+        crop[channel] = self.nan_fill
+        return crop
+
+    def _random_crop(self, image, crop_size):
+        if image.ndim != 3:
+            raise ValueError(f"Expected radar tensor with shape C x H x W, got {tuple(image.shape)}")
+        _, height, width = image.shape
+        crop_size = min(crop_size, height, width)
+        top = random.randint(0, height - crop_size)
+        left = random.randint(0, width - crop_size)
+        return image[:, top:top + crop_size, left:left + crop_size]
+
+    def _random_flip(self, image):
+        if random.random() < 0.5:
+            image = torch.flip(image, dims=(-1,))
+        if random.random() < 0.5:
+            image = torch.flip(image, dims=(-2,))
+        return image
+
+    def _crop_size_pixels(self, crop_size_km, grid_spacing_km, patch_size):
+        pixels = int(round(float(crop_size_km) / float(grid_spacing_km)))
+        pixels = max(patch_size, pixels)
+        pixels = (pixels // patch_size) * patch_size
+        return max(patch_size, pixels)
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Cloud-DINO', parents=[get_args_parser()])
+    parser = argparse.ArgumentParser('Radar-DINO', parents=[get_args_parser()])
     args = parser.parse_args()
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    train_cloud_dino(args)
+    train_radar_dino(args)

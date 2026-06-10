@@ -3,52 +3,29 @@ import sys
 import argparse
 import datetime
 import time
-import re
-
-import numpy as np
 
 import torch
 from torch import nn
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
-from torchvision import datasets
-from torchvision import transforms as pth_transforms
 from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
 
 
-
-
-class ImageFolderWithPaths(datasets.ImageFolder):
-    """Custom dataset that includes image file paths. Extends
-    torchvision.datasets.ImageFolder
-    """
-
-    # override the __getitem__ method. this is the method that dataloader calls
-    def __getitem__(self, index):
-        # this is what ImageFolder normally returns 
-        original_tuple = super(ImageFolderWithPaths, self).__getitem__(index)
-        # the image file path
-        path = self.imgs[index][0]
-        # make a new tuple that includes original and the path
-        tuple_with_path = (original_tuple + (path,))
-        return tuple_with_path
-
-
-
-
-
 def extract_feature_pipeline(args):
     # ============ preparing data ... ============
-    transform = pth_transforms.Compose([
-        pth_transforms.Resize(args.image_size, interpolation=3),
-        #pth_transforms.CenterCrop(224),
-        pth_transforms.ToTensor(),
-        pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-    ])
-    dataset = ReturnIndexDataset(args.data_path, transform=transform)
+    crop_size = args.image_size[0] if isinstance(args.image_size, list) else args.image_size
+    transform = RadarCenterCropTransform(crop_size, args.patch_size)
+    z_level = None if args.z_level.lower() == "none" else float(args.z_level)
+    dataset = ReturnIndexDataset(
+        args.data_path,
+        fields=args.radar_fields,
+        z_level=z_level,
+        transform=transform,
+        nan_fill=args.radar_nan_fill,
+    )
 
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
@@ -59,11 +36,13 @@ def extract_feature_pipeline(args):
         pin_memory=True,
         drop_last=True,
     )
-    print(f"Data loaded: there are {len(dataset)} images.")
+    print(f"Data loaded: there are {len(dataset)} radar NetCDF files.")
 
     # ============ building network ... ============
     if "vit" in args.arch:
-        model = vits.__dict__[args.arch](patch_size=args.patch_size, num_classes=0)
+        if args.in_chans is None:
+            args.in_chans = len(args.radar_fields)
+        model = vits.__dict__[args.arch](patch_size=args.patch_size, num_classes=0, in_chans=args.in_chans)
         print(f"Model {args.arch} {args.patch_size}x{args.patch_size} built.")
     elif "xcit" in args.arch:
         model = torch.hub.load('facebookresearch/xcit:main', args.arch, num_classes=0)
@@ -79,8 +58,8 @@ def extract_feature_pipeline(args):
 
     start_time = time.time()
     # ============ extract features ... ============
-    print("Extracting features ...")
-    features, file_names, attentional_maps = extract_features(model, data_loader, args.use_cuda)
+    print("Extracting features and attentional maps ...")
+    features, attentional_maps, selected_indices = extract_features(model, data_loader, args.use_cuda)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -89,81 +68,57 @@ def extract_feature_pipeline(args):
     if utils.get_rank() == 0:
         features = nn.functional.normalize(features, dim=1, p=2)
 
-    # save features and labels
     if args.dump_features and dist.get_rank() == 0:
+        os.makedirs(args.dump_features, exist_ok=True)
+        file_paths = [dataset.samples[index] for index in selected_indices]
+        file_names = [os.path.basename(path) for path in file_paths]
         torch.save(features.cpu(), os.path.join(args.dump_features, "feat.pth"))
-        torch.save(file_names.cpu(), os.path.join(args.dump_features, "file_name.pth"))
+        torch.save(file_names, os.path.join(args.dump_features, "file_name.pth"))
+        torch.save(file_paths, os.path.join(args.dump_features, "file_path.pth"))
         torch.save(attentional_maps.cpu(), os.path.join(args.dump_features, "att_map.pth"))
-        print(f"Features and attentional maps with their corresponding file names are saved in {args.dump_features}!")
+        print(f"Features and attentional maps with their corresponding radar file names are saved in {args.dump_features}!")
     return features
-
-
-
 
 
 @torch.no_grad()
 def extract_features(model, data_loader, use_cuda=True):
     metric_logger = utils.MetricLogger(delimiter="  ")
     features = None
-    file_names = None
     attentional_maps = None
+    selected_mask = None
+    selected_indices = None
     if args.inference_up_to:
-        cumulative_indexes = torch.zeros(len(data_loader.dataset), dtype=torch.bool)
+        selected_mask = torch.zeros(len(data_loader.dataset), dtype=torch.bool)
         counter = 0
 
-    printing=True
-    for images, index, path in metric_logger.log_every(data_loader, 10):
+    printing = True
+    for images, index in metric_logger.log_every(data_loader, 10):
         if args.inference_up_to and counter >= args.inference_up_to:
-                break
+            break
 
         # move images to gpu
         images = images.cuda(non_blocking=True)
-
-        # make the image divisible by the patch size
-        w, h = images.shape[-2] - images.shape[-2] % args.patch_size, images.shape[-1] - images.shape[-1] % args.patch_size
-        images = images[:, :, :w, :h]
         if printing and dist.get_rank() == 0:
-            printing=False
-            print('images shape is ', images.shape)
-
+            printing = False
+            print('radar tensor shape is ', images.shape)
         index = index.cuda(non_blocking=True)
-
-        # get file names
-        local_file_names = []
-        for i in range(args.batch_size_per_gpu):
-            file_name = re.sub("[^0-9]", "", os.path.basename(path[i]))
-            file_name = np.array(list(file_name), dtype=int)
-            local_file_names.append(file_name)
-
-        local_file_names = np.array(local_file_names)
-        local_file_names = torch.from_numpy(local_file_names).float()
-
-        # move local file names to gpu
-        local_file_names = local_file_names.cuda(non_blocking=True)
-        #print('local_file_names shape is ', local_file_names.shape)
 
         # forward pass
         feats = model(images).clone()
-        #print('feats shape is ', feats.shape)
 
         # getting attentional maps
         local_attentional_maps = model.get_last_selfattention(images).clone()
-        bz = local_attentional_maps.shape[0] # batch size
-        # we keep only the output patch attention
-        local_attentional_maps = local_attentional_maps[:, :, 0, 1:].reshape(bz, -1)
-        #print('attentions shape is ', local_attentional_maps.shape)
+        batch_size = local_attentional_maps.shape[0]
+        local_attentional_maps = local_attentional_maps[:, :, 0, 1:].reshape(batch_size, -1)
 
-        # init storage feature matrix
-        if dist.get_rank() == 0 and features is None and file_names is None and attentional_maps is None:
+        # init storage tensors
+        if dist.get_rank() == 0 and features is None and attentional_maps is None:
             features = torch.zeros(len(data_loader.dataset), feats.shape[-1])
-            file_names = torch.zeros(len(data_loader.dataset), local_file_names.shape[-1])
             attentional_maps = torch.zeros(len(data_loader.dataset), local_attentional_maps.shape[-1])
             if use_cuda:
                 features = features.cuda(non_blocking=True)
-                file_names = file_names.cuda(non_blocking=True)
                 attentional_maps = attentional_maps.cuda(non_blocking=True)
             print(f"Storing features into tensor of shape {features.shape}")
-            print(f"Storing file names into tensor of shape {file_names.shape}")
             print(f"Storing attentional maps into tensor of shape {attentional_maps.shape}")
 
         # get indexes from all processes
@@ -174,32 +129,19 @@ def extract_features(model, data_loader, use_cuda=True):
         index_all = torch.cat(y_l)
         if args.inference_up_to:
             counter += (dist.get_world_size() * args.batch_size_per_gpu)
-            cumulative_indexes[index_all] = True
-
+            selected_mask[index_all.cpu()] = True
 
         # share attentional maps between processes
         attentional_maps_all = torch.empty(
-                dist.get_world_size(),
-                local_attentional_maps.size(0),
-                local_attentional_maps.size(1),
-                dtype=local_attentional_maps.dtype,
-                device=local_attentional_maps.device,
-                )
+            dist.get_world_size(),
+            local_attentional_maps.size(0),
+            local_attentional_maps.size(1),
+            dtype=local_attentional_maps.dtype,
+            device=local_attentional_maps.device,
+        )
         attentional_maps_output_l = list(attentional_maps_all.unbind(0))
         attentional_maps_output_all_reduce = torch.distributed.all_gather(attentional_maps_output_l, local_attentional_maps, async_op=True)
         attentional_maps_output_all_reduce.wait()
-
-        # share file names between processes
-        file_names_all = torch.empty(
-                dist.get_world_size(),
-                local_file_names.size(0),
-                local_file_names.size(1),
-                dtype=local_file_names.dtype,
-                device=local_file_names.device,
-                )
-        file_names_output_l = list(file_names_all.unbind(0))
-        file_names_output_all_reduce = torch.distributed.all_gather(file_names_output_l, local_file_names, async_op=True)
-        file_names_output_all_reduce.wait()
 
         # share features between processes
         feats_all = torch.empty(
@@ -213,41 +155,59 @@ def extract_features(model, data_loader, use_cuda=True):
         output_all_reduce = torch.distributed.all_gather(output_l, feats, async_op=True)
         output_all_reduce.wait()
 
-        # update storage feature matrix
+        # update storage tensors
         if dist.get_rank() == 0:
             if use_cuda:
                 features.index_copy_(0, index_all, torch.cat(output_l))
-                file_names.index_copy_(0, index_all, torch.cat(file_names_output_l))
                 attentional_maps.index_copy_(0, index_all, torch.cat(attentional_maps_output_l))
             else:
                 features.index_copy_(0, index_all.cpu(), torch.cat(output_l).cpu())
-                file_names.index_copy_(0, index_all.cpu(), torch.cat(file_names_output_l).cpu())
                 attentional_maps.index_copy_(0, index_all.cpu(), torch.cat(attentional_maps_output_l).cpu())
 
     if args.inference_up_to:
-        features = features[cumulative_indexes]
-        file_names = file_names[cumulative_indexes]
-        attentional_maps = attentional_maps[cumulative_indexes]
+        selected_indices = selected_mask.nonzero(as_tuple=False).flatten().tolist()
+        if dist.get_rank() == 0:
+            features = features[selected_mask.to(features.device)]
+            attentional_maps = attentional_maps[selected_mask.to(attentional_maps.device)]
+    else:
+        selected_indices = list(range(len(data_loader.dataset)))
 
-    return features, file_names, attentional_maps
+    return features, attentional_maps, selected_indices
 
-class ReturnIndexDataset(utils.UnlabeledImageDataset):
-    def __init__(self, root, transform=None):
-        super().__init__(root, transform=transform, return_paths=True)
 
+class RadarCenterCropTransform(object):
+    def __init__(self, crop_size, patch_size):
+        self.crop_size = int(crop_size)
+        self.patch_size = int(patch_size)
+
+    def __call__(self, image):
+        if image.ndim != 3:
+            raise ValueError(f"Expected radar tensor with shape C x H x W, got {tuple(image.shape)}")
+        _, height, width = image.shape
+        crop_size = min(self.crop_size, height, width)
+        crop_size = max(self.patch_size, (crop_size // self.patch_size) * self.patch_size)
+        top = (height - crop_size) // 2
+        left = (width - crop_size) // 2
+        image = image[:, top:top + crop_size, left:left + crop_size]
+        missing = image < 0.0
+        return torch.where(missing, image, image.clamp(0.0, 1.0))
+
+
+class ReturnIndexDataset(utils.UnlabeledRadarNetCDFDataset):
     def __getitem__(self, idx):
-        img, _, path = super(ReturnIndexDataset, self).__getitem__(idx)
-        return img, idx, path
+        img, _ = super(ReturnIndexDataset, self).__getitem__(idx)
+        return img, idx
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser('Inference using pretrained weights')
+
+def get_args_parser():
+    parser = argparse.ArgumentParser('Associative attentional Radar-DINO inference using pretrained weights')
     parser.add_argument('--batch_size_per_gpu', default=2, type=int, help='Per-GPU batch-size')
-    parser.add_argument("--image_size", default=(1024, 1024), type=int, nargs="+", help="Resize image.")
+    parser.add_argument("--image_size", default=[300], type=int, nargs="+", help="Center-crop radar grid before feature extraction, in 1 km grid cells by default.")
     parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--use_cuda', default=True, type=utils.bool_flag,
         help="Should we store the features on GPU? We recommend setting this to False if you encounter OOM")
     parser.add_argument('--arch', default='vit_small', type=str, help='Architecture')
-    parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
+    parser.add_argument('--patch_size', default=5, type=int, help='Patch size in grid cells; default 5 is 5x5 km on the KHTX 1 km grid.')
     parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--dump_features', default=None,
@@ -258,9 +218,21 @@ if __name__ == '__main__':
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", "--local-rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    parser.add_argument('--data_path', default='/path/to/sky_images/', type=str)
+    parser.add_argument('--data_path', default='../radar_dino_test/KHTX/gridnc', type=str)
+    parser.add_argument('--radar_fields', default=['reflectivity'], nargs='+', type=str,
+        help='Radar variable names to stack as input channels.')
+    parser.add_argument('--z_level', default='1000.0', type=str,
+        help='Altitude in meters to select from 3D radar grids. Use --z_level none for column max.')
+    parser.add_argument('--radar_nan_fill', default=-1.0, type=float,
+        help='Normalized sentinel value assigned where a selected radar field contains NaNs.')
+    parser.add_argument('--in_chans', default=None, type=int,
+        help='Number of input channels for ViT patch embedding. Defaults to len(--radar_fields).')
     parser.add_argument('--inference_up_to', default=None, type=int, help='Inference up to n samples from the complete dataset')
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == '__main__':
+    args = get_args_parser().parse_args()
 
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
@@ -268,14 +240,11 @@ if __name__ == '__main__':
     cudnn.benchmark = True
 
     if args.load_features:
-        features = torch.load(os.path.join(args.load_features, "feat.pth"))
+        features = torch.load(os.path.join(args.load_features, "feat.pth"), map_location="cpu", weights_only=False)
     else:
-        # need to extract features !
-        extract_feature_pipeline(args)
-        #features = extract_feature_pipeline(args)
+        features = extract_feature_pipeline(args)
 
-    #if utils.get_rank() == 0:
-        #if args.use_cuda:
-            #features = features.cuda()
+    if utils.get_rank() == 0 and args.use_cuda:
+        features = features.cuda()
 
     dist.barrier()

@@ -34,6 +34,20 @@ from PIL import Image, ImageFilter, ImageOps
 
 
 IMG_EXTENSIONS = (".jpg", ".jpeg", ".png", ".ppm", ".bmp", ".pgm", ".tif", ".tiff", ".webp")
+NC_EXTENSIONS = (".nc", ".netcdf")
+
+
+RADAR_FIELD_CLIPS = {
+    "reflectivity": (10.0, 85.0),
+    "velocity": (-35.0, 35.0),
+    "differential_reflectivity": (-8.0, 12.0),
+    "cross_correlation_ratio": (0.2, 1.05),
+    "differential_phase": (0.0, 360.0),
+    "specific_differential_phase": (-5.0, 10.0),
+    "kdp": (-5.0, 10.0),
+    "KDP": (-5.0, 10.0),
+    "spectrum_width": (0.0, 20.0),
+}
 
 
 class UnlabeledImageDataset(torch.utils.data.Dataset):
@@ -67,6 +81,99 @@ class UnlabeledImageDataset(torch.utils.data.Dataset):
         if self.return_paths:
             return img, 0, path
         return img, 0
+
+
+class UnlabeledRadarNetCDFDataset(torch.utils.data.Dataset):
+    """Load regridded radar NetCDF files as unlabeled tensor samples."""
+
+    def __init__(
+        self,
+        root,
+        fields=("reflectivity",),
+        z_level=1000.0,
+        transform=None,
+        nan_fill=-1.0,
+        return_paths=False,
+    ):
+        self.root = root
+        self.fields = tuple(fields)
+        self.z_level = z_level
+        self.transform = transform
+        self.nan_fill = nan_fill
+        self.return_paths = return_paths
+        if os.path.isfile(root) and root.lower().endswith(NC_EXTENSIONS):
+            self.samples = [root]
+        else:
+            self.samples = sorted(
+                os.path.join(dirpath, filename)
+                for dirpath, _, filenames in os.walk(root)
+                for filename in filenames
+                if filename.lower().endswith(NC_EXTENSIONS)
+            )
+        if not self.samples:
+            raise FileNotFoundError(
+                f"Found no valid NetCDF files under {root}. "
+                f"Supported extensions are: {', '.join(NC_EXTENSIONS)}"
+            )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path = self.samples[index]
+        sample = self._load_sample(path)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.return_paths:
+            return sample, 0, path
+        return sample, 0
+
+    def _load_sample(self, path):
+        try:
+            import xarray as xr
+        except ImportError as exc:
+            raise ImportError(
+                "Reading radar NetCDF files requires xarray and a NetCDF backend "
+                "such as netCDF4 or h5netcdf."
+            ) from exc
+
+        channels = []
+        with xr.open_dataset(path) as ds:
+            for field in self.fields:
+                if field not in ds:
+                    raise KeyError(f"{path} does not contain radar field '{field}'")
+                data = ds[field]
+                if "time" in data.dims:
+                    data = data.isel(time=0)
+                if "z" in data.dims:
+                    if self.z_level is None:
+                        data = data.max(dim="z", skipna=True)
+                    else:
+                        data = data.sel(z=self.z_level, method="nearest")
+
+                array = data.values.astype(np.float32)
+                array = self._normalize_field(field, array)
+                channels.append(torch.from_numpy(array))
+
+        return torch.stack(channels, dim=0)
+
+    def _normalize_field(self, field, array):
+        if field in RADAR_FIELD_CLIPS:
+            low, high = RADAR_FIELD_CLIPS[field]
+        else:
+            finite = array[np.isfinite(array)]
+            if finite.size == 0:
+                low, high = 0.0, 1.0
+            else:
+                low, high = np.percentile(finite, (1, 99))
+                if low == high:
+                    high = low + 1.0
+        nan_mask = np.isnan(array)
+        array = np.nan_to_num(array, nan=low, posinf=high, neginf=low)
+        array = np.clip(array, low, high)
+        array = (array - low) / (high - low)
+        array[nan_mask] = self.nan_fill
+        return array
 
 
 class GaussianBlur(object):
