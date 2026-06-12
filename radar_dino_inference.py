@@ -212,29 +212,46 @@ def save_reflectivity_attention_overlays(model, images, indices, paths):
 def reflectivity_dbz_for_display(reflectivity):
     values = reflectivity.copy()
     missing = values < 0.0
-    values[missing] = np.nan
+    below_floor = values <= 0.0
     low, high = utils.RADAR_FIELD_CLIPS["reflectivity"]
     values = low + values * (high - low)
-    return values, missing, low, high
+    mask = missing | below_floor
+    values[mask] = np.nan
+    return values, mask, low, high
 
 
 def save_reflectivity_attention_overlay(reflectivity, attention, output_path, title, attention_label):
-    values = reflectivity.copy()
-    missing = values < 0.0
-    values[missing] = np.nan
+    reflectivity_dbz, missing, low, high = reflectivity_dbz_for_display(reflectivity)
     attention = normalize_for_display(attention)
 
-    cmap_obj = plt.get_cmap(args.reflectivity_cmap).copy()
-    cmap_obj.set_bad(color="black")
-    fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
-    base = ax.imshow(values, cmap=cmap_obj, vmin=0.0, vmax=1.0, origin="upper")
-    overlay = ax.imshow(attention, cmap="magma", alpha=args.attention_alpha, vmin=0.0, vmax=1.0, origin="upper")
+    reflectivity_cmap = plt.get_cmap(args.reflectivity_cmap).copy()
+    reflectivity_cmap.set_bad(color="black")
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5), constrained_layout=True)
+
+    radar_im = axes[0].imshow(
+        reflectivity_dbz,
+        cmap=reflectivity_cmap,
+        vmin=low,
+        vmax=high,
+        origin="upper",
+    )
     if missing.any():
-        ax.contour(missing.astype(float), levels=[0.5], colors="white", linewidths=0.4)
-    ax.set_title(title)
-    ax.set_axis_off()
-    fig.colorbar(base, ax=ax, fraction=0.046, pad=0.04, label="normalized reflectivity")
-    fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.10, label=attention_label)
+        axes[0].contour(missing.astype(float), levels=[0.5], colors="white", linewidths=0.4)
+    axes[0].set_title("reflectivity")
+    axes[0].set_axis_off()
+    fig.colorbar(radar_im, ax=axes[0], fraction=0.046, pad=0.04, label="reflectivity (dBZ)")
+
+    attention_im = axes[1].imshow(
+        attention,
+        cmap="magma",
+        vmin=0.0,
+        vmax=1.0,
+        origin="upper",
+    )
+    axes[1].set_title(attention_label)
+    axes[1].set_axis_off()
+    fig.colorbar(attention_im, ax=axes[1], fraction=0.046, pad=0.04, label=attention_label)
+    fig.suptitle(title)
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"{output_path} saved.")

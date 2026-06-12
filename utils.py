@@ -38,7 +38,7 @@ NC_EXTENSIONS = (".nc", ".netcdf")
 
 
 RADAR_FIELD_CLIPS = {
-    "reflectivity": (10.0, 85.0),
+    "reflectivity": (10.0, 75.0),
     "velocity": (-35.0, 35.0),
     "differential_reflectivity": (-8.0, 12.0),
     "cross_correlation_ratio": (0.2, 1.05),
@@ -139,23 +139,36 @@ class UnlabeledRadarNetCDFDataset(torch.utils.data.Dataset):
 
         channels = []
         with xr.open_dataset(path) as ds:
+            reflectivity_valid_mask = self._reflectivity_valid_mask(ds)
             for field in self.fields:
                 if field not in ds:
                     raise KeyError(f"{path} does not contain radar field '{field}'")
-                data = ds[field]
-                if "time" in data.dims:
-                    data = data.isel(time=0)
-                if "z" in data.dims:
-                    if self.z_level is None:
-                        data = data.max(dim="z", skipna=True)
-                    else:
-                        data = data.sel(z=self.z_level, method="nearest")
+                data = self._select_radar_slice(ds[field])
 
                 array = data.values.astype(np.float32)
                 array = self._normalize_field(field, array)
+                if reflectivity_valid_mask is not None:
+                    array[~reflectivity_valid_mask] = self.nan_fill
                 channels.append(torch.from_numpy(array))
 
         return torch.stack(channels, dim=0)
+
+    def _select_radar_slice(self, data):
+        if "time" in data.dims:
+            data = data.isel(time=0)
+        if "z" in data.dims:
+            if self.z_level is None:
+                data = data.max(dim="z", skipna=True)
+            else:
+                data = data.sel(z=self.z_level, method="nearest")
+        return data
+
+    def _reflectivity_valid_mask(self, ds):
+        if "reflectivity" not in ds:
+            return None
+        low, high = RADAR_FIELD_CLIPS["reflectivity"]
+        reflectivity = self._select_radar_slice(ds["reflectivity"]).values.astype(np.float32)
+        return np.isfinite(reflectivity) & (reflectivity >= low) & (reflectivity <= high)
 
     def _normalize_field(self, field, array):
         if field in RADAR_FIELD_CLIPS:

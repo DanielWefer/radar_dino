@@ -8,7 +8,7 @@ This project is based in the [original DINO](https://github.com/facebookresearch
 
 `python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_training.py --data_path ../radar_dino_test/KHTX/gridnc --output_dir /path/to/your/model/ --use_fp16 false`
 
-By default, Radar-DINO uses 1-km reflectivity, clips reflectivity to 10-85 dBZ, maps original NaNs to -1.0 after normalization, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km grid, this gives 5x5 km ViT patches. Training also uses --channel_nan_prob 0.1 to randomly set one crop channel to the NaN sentinel.
+By default, Radar-DINO uses 1-km reflectivity, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km grid, this gives 5x5 km ViT patches. Training also uses --channel_nan_prob 0.1 to randomly set one crop channel to the NaN sentinel.
 
 ## Running inference to obtain Radar-DINO's features
 
