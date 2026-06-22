@@ -4,11 +4,52 @@ PyTorch implementation for Radar-DINO.
 
 This project is based in the [original DINO](https://github.com/facebookresearch/dino) repository by [Facebook AI research group](https://ai.facebook.com/).
 
+## Testing and test-driven development
+
+The test suite is CPU-only by default and uses small synthetic radar NetCDF
+files. It does not require production radar data, distributed initialization, or
+a CUDA device.
+
+Install the test dependencies into the same environment used for Radar-DINO:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+```
+
+Run the complete suite:
+
+```bash
+make test
+```
+
+Run only fast unit tests or the end-to-end synthetic pipeline test:
+
+```bash
+make test-unit
+make test-integration
+```
+
+Generate a coverage report:
+
+```bash
+make test-cov
+```
+
+For test-driven changes:
+
+1. Add or update a focused test describing the desired behavior.
+2. Run that test and confirm it fails for the expected reason.
+3. Make the smallest production change that satisfies the test.
+4. Run `make test` before committing.
+
+Tests that eventually require CUDA should use the `gpu` pytest marker and remain
+separate from the default CPU suite.
+
 ## For training Radar-DINO
 
 `python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_training.py --data_path ../radar_dino_test/KHTX/gridnc --output_dir /path/to/your/model/ --use_fp16 false`
 
-By default, Radar-DINO uses 1-km reflectivity, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km grid, this gives 5x5 km ViT patches. Training also uses --channel_nan_prob 0.1 to randomly set one crop channel to the NaN sentinel.
+By default, Radar-DINO selects reflectivity at 2 km altitude, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km horizontal grid, this gives 5x5 km ViT patches. Training also uses --channel_nan_prob 0.1 to randomly set one crop channel to the NaN sentinel.
 
 ## Running inference to obtain Radar-DINO's features
 

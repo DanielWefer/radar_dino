@@ -322,7 +322,7 @@ class RadarCenterCropTransform(object):
 
 
 class ReturnIndexDataset(utils.UnlabeledRadarNetCDFDataset):
-    def __init__(self, root, fields=("reflectivity",), z_level=1000.0, transform=None, nan_fill=-1.0):
+    def __init__(self, root, fields=("reflectivity",), z_level=2000.0, transform=None, nan_fill=-1.0):
         super().__init__(root, fields=fields, z_level=z_level, transform=transform, nan_fill=nan_fill, return_paths=True)
 
     def __getitem__(self, idx):
@@ -352,7 +352,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', default='../radar_dino_test/KHTX/gridnc', type=str)
     parser.add_argument('--radar_fields', default=['reflectivity'], nargs='+', type=str,
         help='Radar variable names to stack as input channels.')
-    parser.add_argument('--z_level', default='1000.0', type=str,
+    parser.add_argument('--z_level', default='2000.0', type=str,
         help='Altitude in meters to select from 3D radar grids. Use --z_level none for column max.')
     parser.add_argument('--radar_nan_fill', default=-1.0, type=float,
         help='Normalized sentinel value assigned where a selected radar field contains NaNs.')

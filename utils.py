@@ -90,7 +90,7 @@ class UnlabeledRadarNetCDFDataset(torch.utils.data.Dataset):
         self,
         root,
         fields=("reflectivity",),
-        z_level=1000.0,
+        z_level=2000.0,
         transform=None,
         nan_fill=-1.0,
         return_paths=False,

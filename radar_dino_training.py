@@ -125,7 +125,7 @@ def get_args_parser():
         help='Path to regridded radar NetCDF files.')
     parser.add_argument('--radar_fields', default=['reflectivity'], nargs='+', type=str,
         help='Radar variable names to stack as input channels.')
-    parser.add_argument('--z_level', default='1000.0', type=str,
+    parser.add_argument('--z_level', default='2000.0', type=str,
         help='Altitude in meters to select from 3D radar grids. Use --z_level none for column max.')
     parser.add_argument('--radar_nan_fill', default=-1.0, type=float,
         help='Normalized sentinel value assigned where a selected radar field contains NaNs.')

@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "unit: fast CPU-only tests with synthetic inputs",
+    "integration: tests that cross module or file-format boundaries",
+    "gpu: tests that require a CUDA-capable GPU",
+]
+
