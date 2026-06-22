@@ -20,8 +20,5 @@ __pycache__
 # Ignoring numpy generated files
 *.npy
 
-# Ignoring jupyter-notebooks
-*.ipynb
-
 #ignoring testing description file
 TESTING.md
