@@ -117,8 +117,8 @@ def get_args_parser():
         help='Physical width of local radar crops in km.')
     parser.add_argument('--grid_spacing_km', default=1.0, type=float,
         help='Horizontal grid spacing in km. KHTX gridnc is 1 km.')
-    parser.add_argument('--channel_nan_prob', default=0.1, type=float,
-        help='Probability that a crop has one randomly selected radar channel set to the NaN sentinel.')
+    parser.add_argument('--channel_nan_prob', default=1.0, type=float,
+        help='Probability that each student crop has one randomly selected radar channel set to the NaN sentinel. Teacher crops keep all channels.')
 
     # Misc
     parser.add_argument('--data_path', default='../radar_dino_test/KHTX/gridnc', type=str,
@@ -339,10 +339,15 @@ def train_one_epoch(student, teacher, teacher_without_ddp, radar_dino_loss, data
 
         # move images to gpu
         images = [im.cuda(non_blocking=True) for im in images]
-        # teacher and student forward passes + compute Radar-DINO loss
+        # Teacher sees full-field global views; student receives field-masked views.
+        student_images = mask_random_student_channels(
+            images,
+            nan_fill=args.radar_nan_fill,
+            channel_nan_prob=args.channel_nan_prob,
+        )
         with torch.cuda.amp.autocast(fp16_scaler is not None):
             teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
-            student_output = student(images)
+            student_output = student(student_images)
             loss = radar_dino_loss(student_output, teacher_output, epoch)
 
         if not math.isfinite(loss.item()):
@@ -384,6 +389,24 @@ def train_one_epoch(student, teacher, teacher_without_ddp, radar_dino_loss, data
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+def mask_random_student_channels(images, nan_fill, channel_nan_prob):
+    if channel_nan_prob <= 0:
+        return images
+
+    masked_images = []
+    for image in images:
+        if image.ndim != 4:
+            raise ValueError(f"Expected batched crop with shape B x C x H x W, got {tuple(image.shape)}")
+        batch_size, channel_count = image.shape[:2]
+        masked = image.clone()
+        for sample_index in range(batch_size):
+            if random.random() < channel_nan_prob:
+                channel = random.randrange(channel_count)
+                masked[sample_index, channel] = nan_fill
+        masked_images.append(masked)
+    return masked_images
 
 
 class RadarDINOLoss(nn.Module):
@@ -474,8 +497,7 @@ class DataAugmentationRadarDINO(object):
         if noise_std > 0 and random.random() < 0.5:
             noise = torch.randn_like(crop) * noise_std
             crop = torch.where(missing, crop, crop + noise)
-        crop = torch.where(missing, crop, crop.clamp(0.0, 1.0))
-        return self._random_channel_nan(crop)
+        return torch.where(missing, crop, crop.clamp(0.0, 1.0))
 
     def _random_channel_nan(self, crop):
         if self.channel_nan_prob <= 0 or random.random() >= self.channel_nan_prob:

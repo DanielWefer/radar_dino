@@ -113,6 +113,22 @@ def threshold_attention(attentions, threshold, feat_height, feat_width, height, 
     return resize_attention(th_attn, height, width)
 
 
+def field_cls_attention_maps(attentions, num_fields, feat_height, feat_width, height, width):
+    num_heads = attentions.shape[1]
+    expected_tokens = num_fields * feat_height * feat_width
+    cls_attention = attentions[0, :, 0, 1:]
+    if cls_attention.shape[-1] != expected_tokens:
+        raise ValueError(
+            f"Expected {expected_tokens} field-patch tokens, got {cls_attention.shape[-1]}"
+        )
+    field_attentions = cls_attention.reshape(num_heads, num_fields, feat_height, feat_width)
+    return resize_attention(
+        field_attentions.reshape(num_heads * num_fields, feat_height, feat_width),
+        height,
+        width,
+    ).reshape(num_heads, num_fields, height, width)
+
+
 def channel_display_values(channel):
     channel = channel.copy()
     missing = channel < 0.0
@@ -180,12 +196,20 @@ def visualize_attention(args):
         attentions = model.get_last_selfattention(img.to(device))
 
     num_heads = attentions.shape[1]
-    attentions = attentions[0, :, 0, 1:].reshape(num_heads, feat_height, feat_width)
-    upsampled_attentions = resize_attention(attentions, height, width)
+    num_fields = sample.shape[0]
+    upsampled_attentions = field_cls_attention_maps(
+        attentions,
+        num_fields,
+        feat_height,
+        feat_width,
+        height,
+        width,
+    )
 
     threshold_masks = None
     if args.threshold is not None:
-        flat_attentions = attentions.reshape(num_heads, -1)
+        attentions = attentions[0, :, 0, 1:].reshape(num_heads, num_fields, feat_height, feat_width)
+        flat_attentions = attentions.reshape(num_heads * num_fields, -1)
         threshold_masks = threshold_attention(
             flat_attentions,
             args.threshold,
@@ -193,7 +217,7 @@ def visualize_attention(args):
             feat_width,
             height,
             width,
-        )
+        ).reshape(num_heads, num_fields, height, width)
 
     os.makedirs(args.output_dir, exist_ok=True)
     sample_np = sample.cpu().numpy()
@@ -211,13 +235,13 @@ def visualize_attention(args):
                 args.output_dir,
                 f"channel-{channel_index}_{field_name}_attn-head{head}.png",
             )
-            save_attention_overlay(channel, upsampled_attentions[head], field_name, head, overlay_path, args.cmap)
+            save_attention_overlay(channel, upsampled_attentions[head, channel_index], field_name, head, overlay_path, args.cmap)
             if threshold_masks is not None:
                 mask_path = os.path.join(
                     args.output_dir,
                     f"channel-{channel_index}_{field_name}_mask-th-head{head}.png",
                 )
-                save_threshold_mask(threshold_masks[head], field_name, head, mask_path)
+                save_threshold_mask(threshold_masks[head, channel_index], field_name, head, mask_path)
 
 
 def get_args_parser():
