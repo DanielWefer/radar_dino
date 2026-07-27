@@ -37,10 +37,16 @@ result.feature                 # (384,) for vit_small
 result.attention               # heads x fields x height x width
 result.attention_for("reflectivity", head="mean")
 result.umap                    # present when a reference catalog is shipped
+result.tsne                    # display-only nearest-neighbor interpolation
 result.cluster                 # HDBSCAN label, or -1 for noise
 result.cluster_probability
 result.neighbors               # five cosine-nearest reference scans
 ```
+
+UMAP supports an out-of-sample transform. Scikit-learn t-SNE does not, so
+`result.tsne` is explicitly an approximate display position interpolated from
+nearby reference scans. Cluster labels are predicted by the fitted
+PCA/HDBSCAN pipeline, never from either two-dimensional visualization.
 
 The requested NetCDF fields may be supplied in any order, but they must match
 the model manifest. Radar-DINO always reorders them to the training order before
@@ -55,6 +61,10 @@ radar-dino analyze /path/to/scan.nc \
   --model /path/to/radar-dino-model-artifact \
   --output /path/to/result
 ```
+
+The output directory contains `feature.npy`, `attention.npy`, `umap.npy`, and
+`tsne.npy` when available. `result.json` records the cluster label,
+membership strength, and five most similar reference scans.
 
 Export an existing trusted training checkpoint after creating a manifest that
 matches its training arguments:

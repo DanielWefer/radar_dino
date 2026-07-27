@@ -61,9 +61,9 @@ def fit_reference_catalog(
         n_components=2,
         n_neighbors=min(umap_neighbors, len(reduced) - 1),
         min_dist=umap_min_dist,
-        metric="euclidean",
+        metric="cosine",
         random_state=random_state,
-    ).fit(reduced)
+    ).fit(normalized)
 
     reference_tsne = None
     if include_tsne:
@@ -82,7 +82,12 @@ def fit_reference_catalog(
         pca=pca,
         clusterer=clusterer,
         umap=mapper,
+        reference_umap=mapper.embedding_,
         reference_tsne=reference_tsne,
+        reference_clusters=clusterer.labels_,
+        reference_cluster_probability=clusterer.probabilities_,
+        cluster_dimensions=component_count,
+        umap_input="original",
     )
 
 
@@ -112,5 +117,29 @@ def save_reference_catalog(
         joblib.dump(catalog.clusterer, root / "hdbscan.joblib")
     if catalog.umap is not None:
         joblib.dump(catalog.umap, root / "umap.joblib")
+    if catalog.reference_umap is not None:
+        np.save(root / "reference_umap.npy", catalog.reference_umap, allow_pickle=False)
     if catalog.reference_tsne is not None:
         np.save(root / "reference_tsne.npy", catalog.reference_tsne, allow_pickle=False)
+    if catalog.reference_clusters is not None:
+        np.save(
+            root / "reference_clusters.npy",
+            catalog.reference_clusters,
+            allow_pickle=False,
+        )
+    if catalog.reference_cluster_probability is not None:
+        np.save(
+            root / "reference_cluster_probability.npy",
+            catalog.reference_cluster_probability,
+            allow_pickle=False,
+        )
+    with (root / "catalog_config.json").open("w", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "cluster_dimensions": catalog.cluster_dimensions,
+                "umap_input": catalog.umap_input,
+            },
+            stream,
+            indent=2,
+        )
+        stream.write("\n")

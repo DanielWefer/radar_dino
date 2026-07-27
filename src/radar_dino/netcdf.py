@@ -129,6 +129,11 @@ def _validate_grid_spacing(dataset, config: RadarDINOConfig) -> None:
         units = str(coordinate.attrs.get("units", "")).strip().lower()
         if units in {"m", "meter", "meters", "metre", "metres"}:
             spacing /= 1000.0
+        elif units == "":
+            # Legacy GridRad/KHTX files omit coordinate units while storing
+            # x/y in meters. Small unitless spacings are treated as kilometers.
+            if spacing >= 100.0:
+                spacing /= 1000.0
         elif units not in {"km", "kilometer", "kilometers", "kilometre", "kilometres"}:
             raise ValueError(
                 f"Cannot interpret units {units!r} for coordinate '{dimension}'; "

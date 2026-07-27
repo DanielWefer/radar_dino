@@ -17,6 +17,7 @@ dist/
 *.safetensors
 *.joblib
 *.parquet
+/radar_train_wip_tokenized/
 
 # Generated notebook and plotting outputs stay outside the repository
 *.png

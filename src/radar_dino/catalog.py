@@ -44,7 +44,12 @@ class ReferenceCatalog:
         pca=None,
         clusterer=None,
         umap=None,
+        reference_umap: np.ndarray | None = None,
         reference_tsne: np.ndarray | None = None,
+        reference_clusters: np.ndarray | None = None,
+        reference_cluster_probability: np.ndarray | None = None,
+        cluster_dimensions: int | None = None,
+        umap_input: str = "original",
     ) -> None:
         self.features = _normalized_rows(features)
         self.metadata = tuple(dict(row) for row in metadata)
@@ -56,15 +61,53 @@ class ReferenceCatalog:
         self.pca = pca
         self.clusterer = clusterer
         self.umap = umap
+        self.reference_umap = (
+            None if reference_umap is None else np.asarray(reference_umap)
+        )
+        self.cluster_dimensions = cluster_dimensions
+        self.umap_input = umap_input
+        if cluster_dimensions is not None and cluster_dimensions <= 0:
+            raise ValueError("cluster_dimensions must be positive")
+        if umap_input not in {"original", "pca"}:
+            raise ValueError("umap_input must be 'original' or 'pca'")
         self.reference_tsne = (
             None if reference_tsne is None else np.asarray(reference_tsne)
         )
+        self.reference_clusters = (
+            None if reference_clusters is None else np.asarray(reference_clusters)
+        )
+        self.reference_cluster_probability = (
+            None
+            if reference_cluster_probability is None
+            else np.asarray(reference_cluster_probability)
+        )
+        if (
+            self.reference_umap is not None
+            and self.reference_umap.shape != (len(self.features), 2)
+        ):
+            raise ValueError(
+                "reference_umap must have shape number_of_references x 2"
+            )
         if (
             self.reference_tsne is not None
             and self.reference_tsne.shape != (len(self.features), 2)
         ):
             raise ValueError(
                 "reference_tsne must have shape number_of_references x 2"
+            )
+        if (
+            self.reference_clusters is not None
+            and self.reference_clusters.shape != (len(self.features),)
+        ):
+            raise ValueError(
+                "reference_clusters must have one label per reference feature"
+            )
+        if (
+            self.reference_cluster_probability is not None
+            and self.reference_cluster_probability.shape != (len(self.features),)
+        ):
+            raise ValueError(
+                "reference_cluster_probability must have one value per reference feature"
             )
 
     @classmethod
@@ -105,18 +148,43 @@ class ReferenceCatalog:
                 ) from exc
             return joblib.load(path)
 
+        umap_path = root / "reference_umap.npy"
         tsne_path = root / "reference_tsne.npy"
+        clusters_path = root / "reference_clusters.npy"
+        probabilities_path = root / "reference_cluster_probability.npy"
+        config_path = root / "catalog_config.json"
+        catalog_config = {}
+        if config_path.is_file():
+            with config_path.open("r", encoding="utf-8") as stream:
+                catalog_config = json.load(stream)
         return cls(
             features,
             metadata,
             pca=load_joblib("pca.joblib"),
             clusterer=load_joblib("hdbscan.joblib"),
             umap=load_joblib("umap.joblib"),
+            reference_umap=(
+                np.load(umap_path, allow_pickle=False)
+                if umap_path.is_file()
+                else None
+            ),
             reference_tsne=(
                 np.load(tsne_path, allow_pickle=False)
                 if tsne_path.is_file()
                 else None
             ),
+            reference_clusters=(
+                np.load(clusters_path, allow_pickle=False)
+                if clusters_path.is_file()
+                else None
+            ),
+            reference_cluster_probability=(
+                np.load(probabilities_path, allow_pickle=False)
+                if probabilities_path.is_file()
+                else None
+            ),
+            cluster_dimensions=catalog_config.get("cluster_dimensions"),
+            umap_input=catalog_config.get("umap_input", "original"),
         )
 
     @property
@@ -129,6 +197,12 @@ class ReferenceCatalog:
     def _analysis_query(self, feature: np.ndarray) -> np.ndarray:
         query = self._query(feature)
         return self.pca.transform(query) if self.pca is not None else query
+
+    def _cluster_query(self, feature: np.ndarray) -> np.ndarray:
+        query = self._analysis_query(feature)
+        if self.cluster_dimensions is not None:
+            query = query[:, : self.cluster_dimensions]
+        return query
 
     def similar(
         self,
@@ -166,14 +240,47 @@ class ReferenceCatalog:
     def project_umap(self, feature: np.ndarray) -> np.ndarray:
         if self.umap is None:
             raise RuntimeError("This reference catalog does not include a fitted UMAP model")
-        return np.asarray(self.umap.transform(self._analysis_query(feature))[0])
+        query = (
+            self._query(feature)
+            if self.umap_input == "original"
+            else self._analysis_query(feature)
+        )
+        return np.asarray(self.umap.transform(query)[0])
+
+    def project_tsne(self, feature: np.ndarray, *, neighbors: int = 15) -> np.ndarray:
+        """Approximate an out-of-sample t-SNE position from nearby references.
+
+        Scikit-learn t-SNE has no transform method. This interpolation places a
+        new feature among its nearest reference scans for display only; cluster
+        assignment remains independent of the two-dimensional visualization.
+        """
+
+        if self.reference_tsne is None:
+            raise RuntimeError(
+                "This reference catalog does not include reference t-SNE coordinates"
+            )
+        if neighbors <= 0:
+            raise ValueError("neighbors must be positive")
+        similarities = self.features @ self._query(feature)[0]
+        count = min(neighbors, len(similarities))
+        indices = np.argpartition(similarities, -count)[-count:]
+        indices = indices[np.argsort(similarities[indices])[::-1]]
+        distances = np.maximum(1.0 - similarities[indices], 0.0)
+        exact = np.flatnonzero(distances <= 1e-7)
+        if exact.size:
+            return np.asarray(self.reference_tsne[indices[exact[0]]]).copy()
+        weights = 1.0 / np.maximum(distances, 1e-6) ** 2
+        weights /= weights.sum()
+        return np.asarray(
+            np.average(self.reference_tsne[indices], axis=0, weights=weights)
+        )
 
     def predict_cluster(self, feature: np.ndarray) -> tuple[int, float]:
         if self.clusterer is None:
             raise RuntimeError(
                 "This reference catalog does not include a fitted cluster model"
             )
-        query = self._analysis_query(feature)
+        query = self._cluster_query(feature)
         try:
             import hdbscan
         except ImportError as exc:

@@ -62,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
     np.save(args.output / "feature.npy", result.feature)
     if result.attention is not None:
         np.save(args.output / "attention.npy", result.attention)
+    if result.umap is not None:
+        np.save(args.output / "umap.npy", result.umap)
+    if result.tsne is not None:
+        np.save(args.output / "tsne.npy", result.tsne)
     summary = {
         "model_id": dino.config.model_id,
         "source": str(result.path),
@@ -70,6 +74,17 @@ def main(argv: list[str] | None = None) -> int:
         "attention_shape": (
             None if result.attention is None else list(result.attention.shape)
         ),
+        "umap": None if result.umap is None else result.umap.tolist(),
+        "tsne": None if result.tsne is None else result.tsne.tolist(),
+        "tsne_note": (
+            None
+            if result.tsne is None
+            else "Display-only interpolation from nearest reference scans; "
+            "cluster assignment is not performed in t-SNE space."
+        ),
+        "cluster": result.cluster,
+        "cluster_probability": result.cluster_probability,
+        "neighbors": list(result.neighbors),
     }
     with (args.output / "result.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2)

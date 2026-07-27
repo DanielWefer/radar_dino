@@ -35,6 +35,7 @@ def packaged_tiny_model(tmp_path):
             "reflectivity": (10.0, 75.0),
             "differential_reflectivity": (-8.0, 12.0),
         },
+        grid_spacing_km=1.0,
         weights_file="model.pth",
     )
     config.to_json(tmp_path / "manifest.json")
@@ -152,9 +153,19 @@ def test_manifest_json_is_plain_versioned_metadata(tmp_path):
 
 
 def test_reference_catalog_round_trip_uses_jsonl_not_csv(tmp_path):
+    reference_umap = np.array([[0, 0], [1, 1], [2, 2]], dtype=np.float32)
+    reference_tsne = np.array([[3, 3], [4, 4], [5, 5]], dtype=np.float32)
+    reference_clusters = np.array([-1, 0, 1])
+    reference_probability = np.array([0.0, 0.8, 0.9], dtype=np.float32)
     catalog = ReferenceCatalog(
         np.eye(3, dtype=np.float32),
         [{"scan_id": f"scan-{index}"} for index in range(3)],
+        reference_umap=reference_umap,
+        reference_tsne=reference_tsne,
+        reference_clusters=reference_clusters,
+        reference_cluster_probability=reference_probability,
+        cluster_dimensions=2,
+        umap_input="original",
     )
 
     save_reference_catalog(catalog, tmp_path)
@@ -162,8 +173,34 @@ def test_reference_catalog_round_trip_uses_jsonl_not_csv(tmp_path):
 
     assert not (tmp_path / "reference_metadata.csv").exists()
     assert (tmp_path / "reference_metadata.jsonl").is_file()
+    assert (tmp_path / "catalog_config.json").is_file()
     assert restored.metadata == catalog.metadata
     np.testing.assert_allclose(restored.features, catalog.features)
+    np.testing.assert_allclose(restored.reference_umap, reference_umap)
+    np.testing.assert_allclose(restored.reference_tsne, reference_tsne)
+    np.testing.assert_array_equal(restored.reference_clusters, reference_clusters)
+    np.testing.assert_allclose(
+        restored.reference_cluster_probability,
+        reference_probability,
+    )
+    assert restored.cluster_dimensions == 2
+    assert restored.umap_input == "original"
+
+
+def test_reference_catalog_interpolates_display_only_tsne():
+    features = np.eye(3, dtype=np.float32)
+    coordinates = np.array([[10, 20], [30, 40], [50, 60]], dtype=np.float32)
+    catalog = ReferenceCatalog(
+        features,
+        [{"scan_id": f"scan-{index}"} for index in range(3)],
+        reference_tsne=coordinates,
+    )
+
+    exact = catalog.project_tsne(features[1])
+    interpolated = catalog.project_tsne(np.array([1.0, 1.0, 0.0]), neighbors=2)
+
+    np.testing.assert_allclose(exact, coordinates[1])
+    np.testing.assert_allclose(interpolated, np.array([20.0, 30.0]))
 
 
 def test_trusted_checkpoint_exports_to_inference_only_safetensors(

@@ -276,6 +276,7 @@ class RadarDINO:
             else None
         )
         umap_coordinate = None
+        tsne_coordinate = None
         cluster_label = None
         cluster_probability = None
         neighbors: tuple[dict, ...] = ()
@@ -283,6 +284,8 @@ class RadarDINO:
             neighbors = tuple(self.catalog.similar(feature, k=5))
             if self.catalog.umap is not None:
                 umap_coordinate = self.catalog.project_umap(feature)
+            if self.catalog.reference_tsne is not None:
+                tsne_coordinate = self.catalog.project_tsne(feature)
             if self.catalog.clusterer is not None:
                 cluster_label, cluster_probability = self.catalog.predict_cluster(feature)
         return RadarDINOResult(
@@ -291,6 +294,7 @@ class RadarDINO:
             feature=feature,
             attention=attention,
             umap=umap_coordinate,
+            tsne=tsne_coordinate,
             cluster=cluster_label,
             cluster_probability=cluster_probability,
             neighbors=neighbors,
@@ -315,6 +319,13 @@ class RadarDINO:
         if self.catalog is None:
             raise RuntimeError("This model artifact does not include a reference catalog")
         return self.catalog.project_umap(feature)
+
+    def project_tsne(self, feature: np.ndarray, *, neighbors: int = 15) -> np.ndarray:
+        """Return a display-only interpolation in the fixed reference t-SNE."""
+
+        if self.catalog is None:
+            raise RuntimeError("This model artifact does not include a reference catalog")
+        return self.catalog.project_tsne(feature, neighbors=neighbors)
 
     def predict_cluster(self, feature: np.ndarray) -> tuple[int, float]:
         if self.catalog is None:

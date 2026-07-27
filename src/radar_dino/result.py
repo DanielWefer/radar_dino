@@ -15,6 +15,7 @@ class RadarDINOResult:
     feature: np.ndarray
     attention: np.ndarray | None = None
     umap: np.ndarray | None = None
+    tsne: np.ndarray | None = None
     cluster: int | None = None
     cluster_probability: float | None = None
     neighbors: tuple[dict, ...] = ()
