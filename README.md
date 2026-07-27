@@ -4,6 +4,71 @@ PyTorch implementation for Radar-DINO.
 
 This project is based in the [original DINO](https://github.com/facebookresearch/dino) repository by [Facebook AI research group](https://ai.facebook.com/).
 
+## Python package
+
+The `wip` field-token architecture is now exposed through an installable
+`radar_dino` package. Each radar field receives its own patch-token sequence and
+learned field embedding. A released model artifact contains:
+
+- `manifest.json`: the exact field order, normalization, altitude, input size,
+  patch size, and architecture used during training.
+- `model.safetensors`: inference-only teacher-backbone weights.
+- Optional reference-catalog files for PCA/HDBSCAN cluster assignment, UMAP
+  projection, reference t-SNE visualization, and cosine-nearest scans.
+
+Install the local checkout during development:
+
+```bash
+python -m pip install -e '.[netcdf,hub,analysis,dev]'
+```
+
+Analyze one NetCDF scan from a notebook:
+
+```python
+from radar_dino import RadarDINO
+
+dino = RadarDINO.from_pretrained(
+    "/path/to/radar-dino-model-artifact",
+    device="auto",
+)
+result = dino.analyze("/path/to/scan.nc")
+
+result.feature                 # (384,) for vit_small
+result.attention               # heads x fields x height x width
+result.attention_for("reflectivity", head="mean")
+result.umap                    # present when a reference catalog is shipped
+result.cluster                 # HDBSCAN label, or -1 for noise
+result.cluster_probability
+result.neighbors               # five cosine-nearest reference scans
+```
+
+The requested NetCDF fields may be supplied in any order, but they must match
+the model manifest. Radar-DINO always reorders them to the training order before
+inference. Missing fields, unknown fields, incompatible spatial dimensions,
+undersized grids, and incompatible grid spacing raise errors instead of
+silently changing the model input.
+
+The same operation is available from the command line:
+
+```bash
+radar-dino analyze /path/to/scan.nc \
+  --model /path/to/radar-dino-model-artifact \
+  --output /path/to/result
+```
+
+Export an existing trusted training checkpoint after creating a manifest that
+matches its training arguments:
+
+```bash
+radar-dino export /path/to/checkpoint.pth \
+  --manifest /path/to/manifest.json \
+  --output /path/to/radar-dino-model-artifact \
+  --allow-unsafe-pickle
+```
+
+Only use `--allow-unsafe-pickle` for checkpoints you trust. The exported public
+artifact contains tensor-only `safetensors` weights and plain JSON metadata.
+
 ## Testing and test-driven development
 
 The test suite is CPU-only by default and uses small synthetic radar NetCDF
@@ -49,7 +114,7 @@ separate from the default CPU suite.
 
 `python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_training.py --data_path ../radar_dino_test/KHTX/gridnc --output_dir /path/to/your/model/ --use_fp16 false`
 
-By default, Radar-DINO selects reflectivity at 2 km altitude, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km horizontal grid, this gives 5x5 km ViT patches. Training also uses --channel_nan_prob 0.1 to randomly set one crop channel to the NaN sentinel.
+By default, Radar-DINO selects reflectivity at 2 km altitude, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km horizontal grid, this gives 5x5 km ViT patches. On the field-token `wip` architecture, `--channel_nan_prob` controls asymmetric student-field masking while teacher crops retain all fields.
 
 ## Running inference to obtain Radar-DINO's features
 
