@@ -33,7 +33,7 @@ def export_checkpoint(
         patch_size=config.patch_size,
         num_classes=0,
         in_chans=len(config.fields),
-        img_size=[config.input_size[0]],
+        img_size=[config.positional_embedding_size[0]],
     )
     checkpoint = _load_checkpoint(
         Path(checkpoint_path),

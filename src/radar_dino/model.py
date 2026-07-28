@@ -148,7 +148,7 @@ class RadarDINO:
             patch_size=config.patch_size,
             num_classes=0,
             in_chans=len(config.fields),
-            img_size=[config.input_size[0]],
+            img_size=[config.positional_embedding_size[0]],
         )
         if config.embedding_dimension is not None:
             actual_dimension = int(network.embed_dim)
@@ -281,7 +281,13 @@ class RadarDINO:
         cluster_probability = None
         neighbors: tuple[dict, ...] = ()
         if self.catalog is not None:
-            neighbors = tuple(self.catalog.similar(feature, k=5))
+            neighbors = tuple(
+                self.catalog.similar(
+                    feature,
+                    k=5,
+                    exclude_scan_id=sample.path.stem,
+                )
+            )
             if self.catalog.umap is not None:
                 umap_coordinate = self.catalog.project_umap(feature)
             if self.catalog.reference_tsne is not None:

@@ -18,6 +18,8 @@ dist/
 *.joblib
 *.parquet
 /radar_train_wip_tokenized/
+/radar_train/
+/wip_weights/
 
 # Generated notebook and plotting outputs stay outside the repository
 *.png

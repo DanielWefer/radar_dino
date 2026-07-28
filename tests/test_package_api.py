@@ -29,6 +29,7 @@ def packaged_tiny_model(tmp_path):
         patch_size=1,
         fields=("reflectivity", "differential_reflectivity"),
         input_size=(2, 3),
+        positional_embedding_size=(2, 2),
         z_level_m=2000.0,
         nan_fill=-1.0,
         normalization={

@@ -30,6 +30,7 @@ class RadarDINOConfig:
     normalization: Mapping[str, tuple[float, float]]
     patch_size: int = 5
     input_size: tuple[int, int] = (300, 300)
+    positional_embedding_size: tuple[int, int] | None = None
     z_level_m: float | None = 2000.0
     nan_fill: float = -1.0
     weights_file: str = "model.safetensors"
@@ -44,6 +45,16 @@ class RadarDINOConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "fields", tuple(self.fields))
         object.__setattr__(self, "input_size", _pair(self.input_size, "input_size"))
+        positional_embedding_size = (
+            self.input_size
+            if self.positional_embedding_size is None
+            else _pair(self.positional_embedding_size, "positional_embedding_size")
+        )
+        object.__setattr__(
+            self,
+            "positional_embedding_size",
+            positional_embedding_size,
+        )
         object.__setattr__(self, "spatial_dims", tuple(self.spatial_dims))
         object.__setattr__(
             self,
@@ -70,6 +81,8 @@ class RadarDINOConfig:
             raise ValueError("patch_size must be positive")
         if any(size % self.patch_size for size in self.input_size):
             raise ValueError("Every input_size dimension must be divisible by patch_size")
+        if self.positional_embedding_size[0] != self.positional_embedding_size[1]:
+            raise ValueError("positional_embedding_size must be square")
         if len(self.spatial_dims) != 2 or len(set(self.spatial_dims)) != 2:
             raise ValueError("spatial_dims must contain two unique dimension names")
         missing_normalization = set(self.fields) - set(self.normalization)
@@ -109,6 +122,7 @@ class RadarDINOConfig:
             "patch_size": self.patch_size,
             "fields": list(self.fields),
             "input_size": list(self.input_size),
+            "positional_embedding_size": list(self.positional_embedding_size),
             "z_level_m": self.z_level_m,
             "nan_fill": self.nan_fill,
             "normalization": {name: list(limits) for name, limits in self.normalization.items()},
