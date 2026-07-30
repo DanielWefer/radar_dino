@@ -1,0 +1,92 @@
+#!/bin/bash -l
+#PBS -A SSL-SULI2026
+#PBS -l select=1:system=polaris
+#PBS -q preemptable
+#PBS -l walltime=2:00:00
+#PBS -l filesystems=home:eagle
+#PBS -j oe
+#PBS -N radar_dino_wip_assoc
+
+set -euo pipefail
+
+module use /soft/modulefiles
+module load conda
+conda activate
+
+REPO_DIR="$HOME/radar_dino_wip"
+DATA_DIR="/eagle/SSL-SULI2026/dwefer/gridnc_gt10pct"
+MODEL_PATH="/eagle/SSL-SULI2026/dwefer/radar_train_wip_tokenized/model/checkpoint.pth"
+OUT_DIR="/eagle/SSL-SULI2026/dwefer/radar/assoc_features_wip_tokenized"
+INFER_SCRIPT="$REPO_DIR/radar_dino_associative_inference.py"
+
+NPROC_PER_NODE=4
+PATCH_SIZE=10
+BATCH_SIZE_PER_GPU=1
+NUM_WORKERS=4
+IMAGE_SIZE=300
+
+mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR/logs"
+
+exec > >(tee -a "$OUT_DIR/logs/${PBS_JOBID:-radar_dino_wip_assoc}.log") 2>&1
+
+[[ -d "$REPO_DIR" ]] || { echo "Missing WIP repo directory: $REPO_DIR" >&2; exit 1; }
+[[ -d "$DATA_DIR" ]] || { echo "Missing data directory: $DATA_DIR" >&2; exit 1; }
+[[ -f "$MODEL_PATH" ]] || { echo "Missing WIP model checkpoint: $MODEL_PATH" >&2; exit 1; }
+[[ -f "$INFER_SCRIPT" ]] || { echo "Missing associative inference script: $INFER_SCRIPT" >&2; exit 1; }
+
+cd "$REPO_DIR"
+
+grep -q "field_embed" vision_transformer.py || {
+  echo "WIP field-token embedding not found in vision_transformer.py" >&2
+  exit 1
+}
+
+echo "Job started: $(date)"
+echo "PBS job id: ${PBS_JOBID:-unknown}"
+echo "Host: $(hostname)"
+echo "Repo: $REPO_DIR"
+echo "Repo state:"
+git status --short --branch
+git rev-parse HEAD
+echo "Data: $DATA_DIR"
+echo "Model: $MODEL_PATH"
+echo "Output: $OUT_DIR"
+echo "Inference script: $INFER_SCRIPT"
+echo "Patch size: $PATCH_SIZE"
+echo "Batch size per GPU: $BATCH_SIZE_PER_GPU"
+echo "Image size: $IMAGE_SIZE"
+
+echo "Python:"
+which python
+python --version
+
+echo "PyTorch:"
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.device_count())"
+
+echo "NetCDF symlink/file count:"
+find -L "$DATA_DIR" -type f -name "*.nc" | wc -l
+
+echo "Estimated WIP associative inference token count:"
+python -c "p=$PATCH_SIZE; fields=5; s=($IMAGE_SIZE//p)*p; print(f'image pixels={s}, tokens per sample={fields*(s//p)*(s//p)}')"
+
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node="$NPROC_PER_NODE" \
+  "$INFER_SCRIPT" \
+  --arch vit_small \
+  --patch_size "$PATCH_SIZE" \
+  --data_path "$DATA_DIR" \
+  --pretrained_weights "$MODEL_PATH" \
+  --checkpoint_key teacher \
+  --dump_features "$OUT_DIR" \
+  --batch_size_per_gpu "$BATCH_SIZE_PER_GPU" \
+  --num_workers "$NUM_WORKERS" \
+  --image_size "$IMAGE_SIZE" \
+  --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
+  --in_chans 5 \
+  --z_level 2000.0 \
+  --radar_nan_fill -1.0
+
+echo "Job finished: $(date)"

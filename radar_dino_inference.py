@@ -17,6 +17,7 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
+from radar_dino.attention import field_attention_maps
 
 
 def extract_feature_pipeline(args):
@@ -170,14 +171,15 @@ def save_reflectivity_attention_overlays(model, images, indices, paths):
     height, width = images.shape[-2:]
     feat_height = height // args.patch_size
     feat_width = width // args.patch_size
-    attentions = attentions[:, :, 0, 1:].reshape(batch_size, num_heads, feat_height, feat_width)
+    attentions = field_attention_maps(
+        attentions,
+        num_fields=len(args.radar_fields),
+        patch_grid=(feat_height, feat_width),
+        output_size=(height, width),
+    )[:, :, reflectivity_channel]
     mean_attentions = attentions.mean(dim=1)
     all_attentions = torch.cat([attentions, mean_attentions.unsqueeze(1)], dim=1)
-    all_attentions = nn.functional.interpolate(
-        all_attentions,
-        size=(height, width),
-        mode="nearest",
-    ).detach().cpu().numpy()
+    all_attentions = all_attentions.detach().cpu().numpy()
     reflectivity = images[:, reflectivity_channel].detach().cpu().numpy()
 
     labels = [f"head{head}" for head in range(num_heads)] + ["mean"]

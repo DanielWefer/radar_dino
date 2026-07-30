@@ -1,27 +1,40 @@
-# Ignore __pycache__ folder
-__pycache__
+# Python caches and build products
+__pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-
-# Ignore .ipynb_checkpoints folder
-__pycache__
+.ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
 
 # Ignoring vim generated files
 *.swp
 
-# Ignorign pytorch generated files
+# Model and analysis artifacts are released separately from the source package
 *.pth
 *.pt
+*.safetensors
+*.joblib
+*.parquet
+/radar_train_wip_tokenized/
+/radar_train/
+/wip_weights/
 
-# Ignoring image files
+# Generated notebook and plotting outputs stay outside the repository
 *.png
-
-# Ignoring gifs
+*.jpg
+*.jpeg
 *.gif
+*.mp4
+*.csv
+/notebook_plots/
+/som_lifecycle_gifs/
+/som_node_gifs/
 
-# Ignoring numpy generated files
+# Generated numerical artifacts
 *.npy
+*.npz
 
-#ignoring testing description file
+# Local testing notes
 TESTING.md
