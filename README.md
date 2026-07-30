@@ -135,75 +135,129 @@ For test-driven changes:
 Tests that eventually require CUDA should use the `gpu` pytest marker and remain
 separate from the default CPU suite.
 
-## For training Radar-DINO
+## Training the WIP field-token model
 
-`python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_training.py --data_path ../radar_dino_test/KHTX/gridnc --output_dir /path/to/your/model/ --use_fp16 false`
+The current training path is `radar_dino_training.py`. Unlike the original
+mixed-channel image tokenizer, it projects every radar field independently
+with a shared single-channel patch projection and adds a learned field
+embedding. The token sequence therefore preserves both field identity and
+spatial patch location.
 
-By default, Radar-DINO selects reflectivity at 2 km altitude, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km horizontal grid, this gives 5x5 km ViT patches. On the field-token `wip` architecture, `--channel_nan_prob` controls asymmetric student-field masking while teacher crops retain all fields.
+### Training data contract
 
-The released `radar-dino-fieldtoken-v1` artifact has its own versioned contract:
-a 300x300 input, 10x10 grid-cell patches, five fields, and a positional table
-initialized at the DINO default size and interpolated during inference. The
-artifact manifest, rather than the training CLI defaults, is authoritative.
+Training recursively reads regridded NetCDF files. The reproduced WIP run uses this exact field order:
 
-## Running inference to obtain Radar-DINO's features
+| Field | Clipping range |
+| --- | ---: |
+| `reflectivity` | 10 to 75 dBZ |
+| `specific_differential_phase` | -5 to 10 deg/km |
+| `differential_reflectivity` | -8 to 12 dB |
+| `cross_correlation_ratio` | 0.2 to 1.05 |
+| `spectrum_width` | 0 to 20 m/s |
 
-`python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_inference.py --data_path ../radar_dino_test/KHTX/gridnc --pretrained_weights /path/to/your/model/checkpoint0000.pth --dump_features /path/to/your/features/`
+Each field is clipped and normalized to `[0, 1]`, and its original NaNs are
+set to `--radar_nan_fill`. At locations where reflectivity is missing or outside
+10-75 dBZ, every field is set to that sentinel (`-1.0` in the WIP run). The job
+selects the grid level nearest 2000 m. Use `--z_level none` only when column
+maxima are intended.
 
-Inference saves reflectivity attention overlays for every head plus a mean-attention two-panel plot to `/path/to/your/features/attention_overlays` by default. Use `--plot_attention_overlays false` to disable this for large runs.
+### Crops, patches, and asymmetric masking
 
-## Running associative inference to obtain Radar-DINO's features and their respective file input names
+The WIP configuration uses 1 km grid spacing, 300 km global crops, 100 km local
+crops, and 10x10 grid-cell patches. Crops are random physical subwindows; they
+are not resized to 224x224. Crop dimensions are rounded down to a patch-size
+multiple.
 
-Here we are truncating the inference ptocess to only 100 samples. That means that after the first 100 samples the inference process will be stoped.
+For every scan, the augmentation produces two global views and four local
+views. It applies independent horizontal and vertical flips, and may add
+Gaussian noise to the second global and local views while preserving missing
+pixels. The teacher receives the two global views without artificial
+whole-field masking. The student receives all six views; with
+`--channel_nan_prob 1.0`, exactly one randomly chosen field in each student
+sample is replaced by `-1.0`.
 
-`python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_associative_inference.py --data_path ../radar_dino_test/KHTX/gridnc --pretrained_weights /path/to/your/model/checkpoint0000.pth --dump_features /path/to/your/features/ --inference_up_to 100`
+With five fields and patch size 10, a 300x300 global crop has 4,500 field-patch
+tokens and a 100x100 local crop has 500, plus the CLS token in each view.
 
-## Training Radar-DINO in a node on 8 GPUs
+### Reproduce the WIP run
 
-To run it during 10 min do
+Run this from the repository root. Change the process count to match the number
+of visible GPUs:
 
-`qsub -n 1 -q full-node -t 10 -A your_project ./train_Radar_DINO.sh`
-
-This is the `train_Radar_DINO.sh` script for training Radar-DINO in a node with 8 GPUs
-
+```bash
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node=4 \
+  radar_dino_training.py \
+  --arch vit_small \
+  --patch_size 10 \
+  --epochs 100 \
+  --batch_size_per_gpu 1 \
+  --num_workers 2 \
+  --data_path /path/to/gridnc \
+  --output_dir /path/to/radar_train_wip_tokenized/model \
+  --saveckp_freq 1 \
+  --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
+  --in_chans 5 \
+  --z_level 2000.0 \
+  --radar_nan_fill -1.0 \
+  --global_crop_size_km 300 \
+  --local_crop_size_km 100 \
+  --grid_spacing_km 1.0 \
+  --local_crops_number 4 \
+  --channel_nan_prob 1.0 \
+  --use_fp16 true
 ```
-#!/bin/sh
 
-# Common paths
-radar_gridnc_path='/path/to/KHTX/gridnc'
-singularity_image_path='/path/to/the/singularity/container/your_singularity_image_file.sif'
-radar_dino_path='/path/to/radar_dino'
-train_radar_dino_path='/path/to/radar_dino/radar_dino_training.py'
-model_path='/path/to/the/model'
+The output directory contains the rolling `checkpoint.pth`, numbered
+`checkpointNNNN.pth` snapshots according to `--saveckp_freq`, and JSON-lines
+training metrics in `log.txt`. Relaunching with the same output directory
+automatically resumes from `checkpoint.pth`, including student, teacher,
+optimizer, DINO loss, epoch, and mixed-precision scaler state.
 
-cd $radar_dino_path
-singularity exec --nv -B $radar_gridnc_path:/RadarGridNC $singularity_image_path python -m torch.distributed.launch --nproc_per_node=8 $train_radar_dino_path --arch vit_small --data_path /RadarGridNC --output_dir $model_path
+On Polaris, copy and adapt
+[`examples/pbs/wip_train.pbs`](examples/pbs/wip_train.pbs), then submit it with:
+
+```bash
+qsub examples/pbs/wip_train.pbs
 ```
 
+The published PBS file retains the original project allocation, filesystem
+paths, queue, and four-GPU configuration as a reference.
 
-## Inferencing using a Radar-DINO trained model on 8 GPUs
+### Matching checkpoint inference
 
-To run it during 10 min do
+Raw-checkpoint inference must use the same architecture, field order, patch
+size, altitude, sentinel, and 300x300 input contract:
 
-`qsub -n 1 -q full-node -t 10 -A your_project ./inference_Radar_DINO.sh`
-
-This is the `inference_Radar_DINO.sh` script for making inference on Radar-DINO in a node with 8 GPUs
-
+```bash
+torchrun \
+  --standalone \
+  --nnodes=1 \
+  --nproc_per_node=1 \
+  radar_dino_inference.py \
+  --arch vit_small \
+  --patch_size 10 \
+  --data_path /path/to/gridnc \
+  --pretrained_weights /path/to/model/checkpoint.pth \
+  --checkpoint_key teacher \
+  --dump_features /path/to/features \
+  --batch_size_per_gpu 1 \
+  --image_size 300 \
+  --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
+  --in_chans 5 \
+  --z_level 2000.0 \
+  --radar_nan_fill -1.0 \
+  --plot_attention_overlays true \
+  --max_attention_plots 20
 ```
-#!/bin/sh
 
-# Common paths
-radar_gridnc_path='/path/to/KHTX/gridnc'
-singularity_image_path='/path/to/the/singularity/container/your_singularity_image_file.sif'
-radar_dino_path='/path/to/radar_dino'
-inference_radar_dino_path='/path/to/radar_dino/radar_dino_inference.py'
-model_path='/path/to/the/model/checkpoint0000.pth'
-output_path='/path/to/output/features'
-
-cd $radar_dino_path
-singularity exec --nv -B $radar_gridnc_path:/RadarGridNC $singularity_image_path python -m torch.distributed.launch --nproc_per_node=8 $inference_radar_dino_path --data_path /RadarGridNC --pretrained_weights $model_path --dump_features $output_path
-```
-
+Use `radar_dino_associative_inference.py` with the same model/data arguments
+when feature rows must be saved alongside their source paths. Add
+`--inference_up_to 100` for a 100-scan smoke test. For new user-facing
+inference, prefer the versioned package and Hugging Face artifact described at
+the top of this README.
 
 ## For visualizing attention maps
 
@@ -215,7 +269,8 @@ multiplot directly:
 python3 post_processing_utilities/visualize_attention.py \
   --pretrained_weights /path/to/checkpoint.pth \
   --radar_path /path/to/scan.nc \
-  --radar_fields reflectivity \
+  --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
+  --in_chans 5 \
   --image_size 300 \
   --patch_size 10 \
   --output_dir /path/to/attention_output
