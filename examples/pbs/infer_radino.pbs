@@ -1,4 +1,5 @@
 #!/bin/bash -l
+# One-node, four-GPU Radar-DINO feature and attention inference for Polaris PBS.
 #PBS -A SSL-SULI2026
 #PBS -l select=1:system=polaris
 #PBS -q preemptable
@@ -7,7 +8,7 @@
 #PBS -j oe
 #PBS -k doe
 #PBS -r y
-#PBS -N rdino_assoc
+#PBS -N rdino_infer
 
 set -euo pipefail
 
@@ -20,18 +21,19 @@ EAGLE_USER_DIR="/eagle/SSL-SULI2026/$USER_NAME"
 REPO_DIR="${RADAR_DINO_REPO_DIR:-$HOME/radar_dino}"
 DATA_DIR="${RADAR_DINO_DATA_DIR:-$EAGLE_USER_DIR/gridnc_gt10pct}"
 MODEL_PATH="${RADAR_DINO_MODEL_PATH:-$EAGLE_USER_DIR/radar_train_fieldtoken/model/checkpoint.pth}"
-OUT_DIR="${RADAR_DINO_ASSOC_FEATURE_DIR:-$EAGLE_USER_DIR/radar/assoc_features_fieldtoken}"
+OUT_DIR="${RADAR_DINO_FEATURE_DIR:-$EAGLE_USER_DIR/radar/features_fieldtoken}"
 EXPECTED_BRANCH="${RADAR_DINO_BRANCH:-main}"
-INFER_SCRIPT="$REPO_DIR/radar_dino_associative_inference.py"
+INFER_SCRIPT="$REPO_DIR/radar_dino_inference.py"
 
 NPROC_PER_NODE=4
 PATCH_SIZE=10
 BATCH_SIZE_PER_GPU=1
 NUM_WORKERS=4
 IMAGE_SIZE=300
+MAX_ATTENTION_PLOTS="${RADAR_DINO_MAX_ATTENTION_PLOTS:-20}"
 
 mkdir -p "$OUT_DIR/logs"
-exec > >(tee -a "$OUT_DIR/logs/${PBS_JOBID:-rdino_assoc}.log") 2>&1
+exec > >(tee -a "$OUT_DIR/logs/${PBS_JOBID:-rdino_infer}.log") 2>&1
 
 fail() {
   echo "ERROR: $*" >&2
@@ -41,7 +43,7 @@ fail() {
 [[ -d "$REPO_DIR/.git" ]] || fail "Missing main repository checkout: $REPO_DIR"
 [[ -d "$DATA_DIR" ]] || fail "Missing data directory: $DATA_DIR"
 [[ -f "$MODEL_PATH" ]] || fail "Missing field-token checkpoint: $MODEL_PATH"
-[[ -f "$INFER_SCRIPT" ]] || fail "Missing associative inference script: $INFER_SCRIPT"
+[[ -f "$INFER_SCRIPT" ]] || fail "Missing inference script: $INFER_SCRIPT"
 
 cd "$REPO_DIR"
 CURRENT_BRANCH="$(git branch --show-current)"
@@ -50,7 +52,7 @@ CURRENT_BRANCH="$(git branch --show-current)"
 git grep -q "field_embed" -- vision_transformer.py || fail \
   "Field-token embedding is missing from vision_transformer.py"
 command -v torchrun >/dev/null || fail "torchrun is not available in the active conda environment"
-python -c "import PIL, torch, torchvision, xarray" || fail "Required Python packages are missing"
+python -c "import matplotlib, PIL, torch, torchvision, xarray" || fail "Required Python packages are missing"
 python -c "import importlib.util as u; assert u.find_spec('netCDF4') or u.find_spec('h5netcdf'), 'Install netCDF4 or h5netcdf'" || fail "No xarray NetCDF backend is installed"
 python -c "import torch; count=torch.cuda.device_count(); assert count >= $NPROC_PER_NODE, f'Expected at least $NPROC_PER_NODE GPUs, found {count}'" || fail "GPU validation failed"
 
@@ -74,6 +76,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA av
 echo "Patch size: $PATCH_SIZE"
 echo "Batch size per GPU: $BATCH_SIZE_PER_GPU"
 echo "Image size: $IMAGE_SIZE"
+echo "Maximum attention plots: $MAX_ATTENTION_PLOTS"
 python -c "p=$PATCH_SIZE; fields=5; s=($IMAGE_SIZE//p)*p; print(f'Image cells={s}, field-patch tokens={fields*(s//p)*(s//p)}')"
 
 torchrun \
@@ -93,6 +96,8 @@ torchrun \
   --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
   --in_chans 5 \
   --z_level 2000.0 \
-  --radar_nan_fill -1.0
+  --radar_nan_fill -1.0 \
+  --plot_attention_overlays true \
+  --max_attention_plots "$MAX_ATTENTION_PLOTS"
 
 echo "Job finished: $(date)"

@@ -17,9 +17,9 @@ FIELD_ORDER = (
     "cross_correlation_ratio spectrum_width"
 )
 JOBS = {
-    "train_radar_dino_fieldtoken.pbs": "radar_dino_training.py",
-    "infer_radar_dino_fieldtoken.pbs": "radar_dino_inference.py",
-    "assoc_infer_radar_dino_fieldtoken.pbs": "radar_dino_associative_inference.py",
+    "train_radino.pbs": "radar_dino_training.py",
+    "infer_radino.pbs": "radar_dino_inference.py",
+    "assoc_infer_radino.pbs": "radar_dino_associative_inference.py",
 }
 TORCHRUN_FLAGS = {"--standalone", "--nnodes", "--nproc_per_node"}
 
@@ -66,9 +66,9 @@ def test_pbs_job_is_valid_main_fieldtoken_submission(pbs_name, entrypoint):
 
 
 def test_pbs_jobs_share_training_checkpoint_contract():
-    training = (PBS_DIR / "train_radar_dino_fieldtoken.pbs").read_text()
-    inference = (PBS_DIR / "infer_radar_dino_fieldtoken.pbs").read_text()
-    associative = (PBS_DIR / "assoc_infer_radar_dino_fieldtoken.pbs").read_text()
+    training = (PBS_DIR / "train_radino.pbs").read_text()
+    inference = (PBS_DIR / "infer_radino.pbs").read_text()
+    associative = (PBS_DIR / "assoc_infer_radino.pbs").read_text()
 
     assert 'radar_train_fieldtoken' in training
     expected_checkpoint = 'radar_train_fieldtoken/model/checkpoint.pth'
