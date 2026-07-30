@@ -291,24 +291,7 @@ on `main`:
   extract features together with source filenames and paths for a reference
   catalog.
 
-These are working Polaris examples, not scheduler-independent scripts. PBS
-resource syntax and site software differ between clusters, so a new user should
-copy a job and review its header before submitting it. In particular:
 
-| Setting | Polaris example | What another site must supply |
-| --- | --- | --- |
-| Allocation | `#PBS -A SSL-SULI2026` | Project or allocation name |
-| Nodes | `#PBS -l select=1:system=polaris` | Syntax for one GPU node |
-| Queue | `capacity` or `preemptable` | An accessible GPU queue |
-| Filesystems | `home:eagle` | Site storage resources, or remove this directive |
-| Environment | ALCF `conda` module | Site CUDA/PyTorch module or environment |
-| Storage | `/eagle/SSL-SULI2026/$USER` | High-throughput project or scratch storage |
-
-Each job uses one node and starts four processes with
-`torchrun --nnodes=1 --nproc_per_node=4`, one process per GPU. If a node at
-another site exposes a different number of GPUs, change both the PBS GPU
-request and `NPROC_PER_NODE` in the copied script. The examples are not
-configured for multi-node rendezvous.
 
 ### 1. Clone the code
 
