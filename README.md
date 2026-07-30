@@ -49,7 +49,7 @@ result.tsne                    # display-only nearest-neighbor interpolation
 result.cluster                 # HDBSCAN label, or -1 for noise
 result.cluster_probability
 result.neighbors               # five cosine-nearest reference scans
-pngs                           # five field-attention PNGs plus UMAP and t-SNE
+pngs                           # multi-head field-attention PNGs plus UMAP and t-SNE
 ```
 
 UMAP supports an out-of-sample transform. Scikit-learn t-SNE does not, so
@@ -75,8 +75,9 @@ radar-dino analyze /path/to/scan.nc \
 The output directory contains `feature.npy`, `attention.npy`, `umap.npy`, and
 `tsne.npy` when available. `result.json` records the cluster label,
 membership strength, five most similar reference scans, and generated PNG
-filenames. PNG output contains one mean-head attention figure per radar field
-plus UMAP and t-SNE reference-cluster plots highlighting the input scan.
+filenames. Each field-attention PNG shows the normalized radar field followed
+by every attention head on a shared scale. Reflectivity uses the bundled
+ChaseSpectral colormap. UMAP and t-SNE plots highlight the input scan.
 
 Export an existing trusted training checkpoint after creating a manifest that
 matches its training arguments:
@@ -206,6 +207,28 @@ singularity exec --nv -B $radar_gridnc_path:/RadarGridNC $singularity_image_path
 
 ## For visualizing attention maps
 
-For attention maps visualiztions, run the following command
+The public package API shown above is the recommended path. The legacy training
+checkpoint utility can also produce the six-head ChaseSpectral reflectivity
+multiplot directly:
 
-`python3 visualize_attention.py --pretrained_weights /path/to/your/pretrained/weights/checkpoint.pth --image_path /path/to/the/image.jpg --image_size size_of_the_image --output_dir /where/to/save/the/maps/ --threshold (a number between 0 and 1) --patch_size 8-16`
+```bash
+python3 post_processing_utilities/visualize_attention.py \
+  --pretrained_weights /path/to/checkpoint.pth \
+  --radar_path /path/to/scan.nc \
+  --radar_fields reflectivity \
+  --image_size 300 \
+  --patch_size 10 \
+  --output_dir /path/to/attention_output
+```
+
+## Sample PBS jobs
+
+The original Polaris PBS jobs are published unchanged as reference templates:
+
+- [`examples/pbs/wip_train.pbs`](examples/pbs/wip_train.pbs)
+- [`examples/pbs/infer_radar_dino_wip_tokenized.pbs`](examples/pbs/infer_radar_dino_wip_tokenized.pbs)
+- [`examples/pbs/assoc_infer_radar_dino_wip_tokenized.pbs`](examples/pbs/assoc_infer_radar_dino_wip_tokenized.pbs)
+
+They retain the original allocation, queue, module, and filesystem paths so
+readers can see an authentic example. Users should copy a script and adapt
+those site-specific values and entry-point names for their own HPC environment.

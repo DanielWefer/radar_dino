@@ -4,7 +4,13 @@ from .artifact import export_checkpoint
 from .catalog import ReferenceCatalog
 from .config import RadarDINOConfig
 from .model import RadarDINO
-from .plotting import plot_attention, plot_projection, save_analysis_plots
+from .plotting import (
+    chasespectral_colormap,
+    plot_attention,
+    plot_attention_heads,
+    plot_projection,
+    save_analysis_plots,
+)
 from .result import RadarDINOResult
 
 __all__ = [
@@ -13,7 +19,9 @@ __all__ = [
     "RadarDINOResult",
     "ReferenceCatalog",
     "export_checkpoint",
+    "chasespectral_colormap",
     "plot_attention",
+    "plot_attention_heads",
     "plot_projection",
     "save_analysis_plots",
 ]

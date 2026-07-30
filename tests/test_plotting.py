@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from radar_dino import RadarDINOResult, ReferenceCatalog
-from radar_dino.plotting import save_analysis_plots
+from radar_dino.plotting import plot_attention_heads, save_analysis_plots
 
 
 pytestmark = pytest.mark.unit
@@ -49,3 +49,32 @@ def test_save_analysis_plots_writes_attention_and_projection_pngs(tmp_path):
     }
     for path in saved.values():
         assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_reflectivity_attention_heads_use_chasespectral_multiplot(tmp_path):
+    plt = pytest.importorskip("matplotlib.pyplot")
+    result = RadarDINOResult(
+        path=tmp_path / "scan.nc",
+        fields=("reflectivity",),
+        feature=np.ones(3, dtype=np.float32),
+        attention=np.arange(6 * 4 * 4, dtype=np.float32).reshape(6, 1, 4, 4),
+    )
+
+    figure, axes = plot_attention_heads(
+        result,
+        "reflectivity",
+        radar_field=np.zeros((4, 4), dtype=np.float32),
+    )
+
+    flat_axes = axes.ravel()
+    assert axes.shape == (4, 2)
+    assert flat_axes[0].images[0].get_cmap().name == "ChaseSpectral"
+    assert flat_axes[0].images[0].get_interpolation() == "none"
+    assert [axis.get_title() for axis in flat_axes[1:7]] == [
+        f"Attention head {head}" for head in range(6)
+    ]
+    assert {axis.images[0].get_clim() for axis in flat_axes[1:7]} == {
+        (0.0, float(result.attention.max()))
+    }
+    assert not flat_axes[7].axison
+    plt.close(figure)

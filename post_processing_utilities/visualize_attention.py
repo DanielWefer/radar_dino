@@ -136,46 +136,113 @@ def channel_display_values(channel):
     return channel, missing
 
 
-def save_channel_plot(channel, field_name, output_path, cmap):
-    values, missing = channel_display_values(channel)
-    cmap_obj = plt.get_cmap(cmap).copy()
-    cmap_obj.set_bad(color="black")
-    fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
-    im = ax.imshow(values, cmap=cmap_obj, vmin=0.0, vmax=1.0, origin="upper")
+def bundled_chasespectral_colormap():
+    """Load the ChaseSpectral RGB table bundled from Py-ART/cmweather."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    rgb_path = os.path.join(REPO_ROOT, "src", "radar_dino", "data", "chase-spectral-rgb.txt")
+    rgb_values = np.loadtxt(rgb_path)
+    return LinearSegmentedColormap.from_list("ChaseSpectral", rgb_values)
+
+
+def pyart_chasespectral_colormap():
+    """Return Py-ART's ChaseSpectral colormap across Py-ART versions."""
+    try:
+        import pyart
+    except ImportError:
+        # Current Py-ART versions source their colormaps from cmweather. This
+        # fallback also supports environments that install that dependency
+        # separately from the full radar I/O stack.
+        try:
+            from cmweather import cm_colorblind
+        except ImportError:
+            return bundled_chasespectral_colormap()
+        return cm_colorblind.ChaseSpectral
+
+    colorblind_module = getattr(pyart.graph, "cm_colorblind", None)
+    if colorblind_module is not None and hasattr(colorblind_module, "ChaseSpectral"):
+        return colorblind_module.ChaseSpectral
+
+    cmweather_module = getattr(pyart.graph, "cmweather", None)
+    if cmweather_module is not None:
+        return cmweather_module.cm_colorblind.ChaseSpectral
+
+    for cmap_name in ("ChaseSpectral", "pyart_ChaseSpectral"):
+        try:
+            return plt.get_cmap(cmap_name)
+        except ValueError:
+            pass
+    return bundled_chasespectral_colormap()
+
+
+def save_reflectivity_attention_multiplot(reflectivity, attentions, output_path):
+    attentions = np.asarray(attentions)
+    if attentions.ndim != 3 or attentions.shape[0] != 6:
+        raise ValueError(
+            "The 4x2 reflectivity multiplot requires exactly six attention "
+            f"heads with shape (6, H, W), got {attentions.shape}."
+        )
+
+    values, missing = channel_display_values(reflectivity)
+    reflectivity_cmap = pyart_chasespectral_colormap().copy()
+    reflectivity_cmap.set_bad(color="black")
+    attention_cmap = plt.get_cmap("magma").copy()
+    attention_cmap.set_bad(color="black")
+
+    finite_attention = attentions[np.isfinite(attentions)]
+    if finite_attention.size == 0:
+        raise ValueError("Attention maps contain no finite values to plot.")
+    attention_max = float(finite_attention.max())
+    if attention_max <= 0.0:
+        attention_max = 1.0
+
+    fig, axes = plt.subplots(4, 2, figsize=(12, 18), constrained_layout=True)
+    axes = axes.ravel()
+
+    reflectivity_image = axes[0].imshow(
+        values,
+        cmap=reflectivity_cmap,
+        vmin=0.0,
+        vmax=1.0,
+        origin="upper",
+    )
     if missing.any():
-        ax.contour(missing.astype(float), levels=[0.5], colors="white", linewidths=0.4)
-    ax.set_title(field_name)
-    ax.set_axis_off()
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="normalized value")
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-    print(f"{output_path} saved.")
+        axes[0].contour(
+            missing.astype(float),
+            levels=[0.5],
+            colors="white",
+            linewidths=0.4,
+        )
+    axes[0].set_title("Reflectivity")
+    axes[0].set_axis_off()
+    fig.colorbar(
+        reflectivity_image,
+        ax=axes[0],
+        fraction=0.046,
+        pad=0.04,
+        label="normalized reflectivity",
+    )
 
+    for head in range(6):
+        ax = axes[head + 1]
+        attention_image = ax.imshow(
+            attentions[head],
+            cmap=attention_cmap,
+            vmin=0.0,
+            vmax=attention_max,
+            origin="upper",
+        )
+        ax.set_title(f"Attention head {head}")
+        ax.set_axis_off()
+        fig.colorbar(
+            attention_image,
+            ax=ax,
+            fraction=0.046,
+            pad=0.04,
+            label="attention",
+        )
 
-def save_attention_overlay(channel, attention, field_name, head, output_path, cmap):
-    values, missing = channel_display_values(channel)
-    cmap_obj = plt.get_cmap(cmap).copy()
-    cmap_obj.set_bad(color="black")
-    fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
-    base = ax.imshow(values, cmap=cmap_obj, vmin=0.0, vmax=1.0, origin="upper")
-    overlay = ax.imshow(attention, cmap="magma", alpha=0.45, origin="upper")
-    if missing.any():
-        ax.contour(missing.astype(float), levels=[0.5], colors="white", linewidths=0.4)
-    ax.set_title(f"{field_name} attention head {head}")
-    ax.set_axis_off()
-    fig.colorbar(base, ax=ax, fraction=0.046, pad=0.04, label="normalized value")
-    fig.colorbar(overlay, ax=ax, fraction=0.046, pad=0.10, label="attention")
-    fig.savefig(output_path, dpi=150)
-    plt.close(fig)
-    print(f"{output_path} saved.")
-
-
-def save_threshold_mask(mask, field_name, head, output_path):
-    fig, ax = plt.subplots(figsize=(6, 5), constrained_layout=True)
-    im = ax.imshow(mask, cmap="gray", vmin=0.0, vmax=1.0, origin="upper")
-    ax.set_title(f"{field_name} threshold mask head {head}")
-    ax.set_axis_off()
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="mask")
+    axes[7].set_axis_off()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
     print(f"{output_path} saved.")
@@ -226,22 +293,15 @@ def visualize_attention(args):
     if threshold_masks is not None:
         torch.save(torch.from_numpy(threshold_masks), os.path.join(args.output_dir, "masks_th.pt"))
 
-    for channel_index, field_name in enumerate(args.radar_fields):
-        channel = sample_np[channel_index]
-        channel_path = os.path.join(args.output_dir, f"channel-{channel_index}_{field_name}.png")
-        save_channel_plot(channel, field_name, channel_path, args.cmap)
-        for head in range(num_heads):
-            overlay_path = os.path.join(
-                args.output_dir,
-                f"channel-{channel_index}_{field_name}_attn-head{head}.png",
-            )
-            save_attention_overlay(channel, upsampled_attentions[head, channel_index], field_name, head, overlay_path, args.cmap)
-            if threshold_masks is not None:
-                mask_path = os.path.join(
-                    args.output_dir,
-                    f"channel-{channel_index}_{field_name}_mask-th-head{head}.png",
-                )
-                save_threshold_mask(threshold_masks[head, channel_index], field_name, head, mask_path)
+    if "reflectivity" not in args.radar_fields:
+        raise ValueError("The attention multiplot requires reflectivity in --radar_fields.")
+    reflectivity_index = args.radar_fields.index("reflectivity")
+    multiplot_path = os.path.join(args.output_dir, "reflectivity_attention_heads.png")
+    save_reflectivity_attention_multiplot(
+        sample_np[reflectivity_index],
+        upsampled_attentions[:, reflectivity_index],
+        multiplot_path,
+    )
 
 
 def get_args_parser():
@@ -270,7 +330,6 @@ def get_args_parser():
     parser.add_argument('--sample_index', default=0, type=int,
         help='Sample index to visualize when --radar_path is a directory.')
     parser.add_argument('--output_dir', default='.', help='Path where to save visualizations.')
-    parser.add_argument('--cmap', default='turbo', help='Matplotlib colormap for radar channels.')
     parser.add_argument('--threshold', type=float, default=None, help='Keep this fraction of attention mass as binary masks.')
     return parser
 
