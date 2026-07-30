@@ -164,9 +164,7 @@ maxima are intended.
 ### Crops, patches, and asymmetric masking
 
 The WIP configuration uses 1 km grid spacing, 300 km global crops, 100 km local
-crops, and 10x10 grid-cell patches. Crops are random physical subwindows; they
-are not resized to 224x224. Crop dimensions are rounded down to a patch-size
-multiple.
+crops, and 10x10 grid-cell patches. 
 
 For every scan, the augmentation produces two global views and four local
 views. It applies independent horizontal and vertical flips, and may add
@@ -179,7 +177,7 @@ sample is replaced by `-1.0`.
 With five fields and patch size 10, a 300x300 global crop has 4,500 field-patch
 tokens and a 100x100 local crop has 500, plus the CLS token in each view.
 
-### Reproduce the WIP run
+### Reproduce the run
 
 Run this from the repository root. Change the process count to match the number
 of visible GPUs:
