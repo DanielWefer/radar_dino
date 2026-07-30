@@ -4,6 +4,7 @@ from .artifact import export_checkpoint
 from .catalog import ReferenceCatalog
 from .config import RadarDINOConfig
 from .model import RadarDINO
+from .plotting import plot_attention, plot_projection, save_analysis_plots
 from .result import RadarDINOResult
 
 __all__ = [
@@ -12,5 +13,8 @@ __all__ = [
     "RadarDINOResult",
     "ReferenceCatalog",
     "export_checkpoint",
+    "plot_attention",
+    "plot_projection",
+    "save_analysis_plots",
 ]
 __version__ = "0.1.0"

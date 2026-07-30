@@ -19,7 +19,14 @@ learned field embedding. A released model artifact contains:
 Install the local checkout during development:
 
 ```bash
-python -m pip install -e '.[netcdf,hub,analysis,dev]'
+python -m pip install -e '.[netcdf,hub,analysis,plot,dev]'
+```
+
+Install the public package directly from GitHub:
+
+```bash
+python -m pip install \
+  "radar-dino[netcdf,hub,analysis,plot] @ git+https://github.com/DanielWefer/radar_dino.git@main"
 ```
 
 Analyze one NetCDF scan from a notebook:
@@ -28,10 +35,11 @@ Analyze one NetCDF scan from a notebook:
 from radar_dino import RadarDINO
 
 dino = RadarDINO.from_pretrained(
-    "/path/to/radar-dino-model-artifact",
+    "dwefer/radar-dino-fieldtoken-v1",
     device="auto",
 )
 result = dino.analyze("/path/to/scan.nc")
+pngs = dino.save_plots(result, "/path/to/output")
 
 result.feature                 # (384,) for vit_small
 result.attention               # heads x fields x height x width
@@ -41,6 +49,7 @@ result.tsne                    # display-only nearest-neighbor interpolation
 result.cluster                 # HDBSCAN label, or -1 for noise
 result.cluster_probability
 result.neighbors               # five cosine-nearest reference scans
+pngs                           # five field-attention PNGs plus UMAP and t-SNE
 ```
 
 UMAP supports an out-of-sample transform. Scikit-learn t-SNE does not, so
@@ -58,13 +67,16 @@ The same operation is available from the command line:
 
 ```bash
 radar-dino analyze /path/to/scan.nc \
-  --model /path/to/radar-dino-model-artifact \
-  --output /path/to/result
+  --model dwefer/radar-dino-fieldtoken-v1 \
+  --output /path/to/result \
+  --plots
 ```
 
 The output directory contains `feature.npy`, `attention.npy`, `umap.npy`, and
 `tsne.npy` when available. `result.json` records the cluster label,
-membership strength, and five most similar reference scans.
+membership strength, five most similar reference scans, and generated PNG
+filenames. PNG output contains one mean-head attention figure per radar field
+plus UMAP and t-SNE reference-cluster plots highlighting the input scan.
 
 Export an existing trusted training checkpoint after creating a manifest that
 matches its training arguments:
@@ -77,7 +89,9 @@ radar-dino export /path/to/checkpoint.pth \
 ```
 
 Only use `--allow-unsafe-pickle` for checkpoints you trust. The exported public
-artifact contains tensor-only `safetensors` weights and plain JSON metadata.
+artifact contains tensor-only `safetensors` weights. Reference PCA, HDBSCAN,
+and UMAP estimators use joblib serialization, so only load a reference catalog
+from a model repository you trust.
 
 ## Testing and test-driven development
 
@@ -125,6 +139,11 @@ separate from the default CPU suite.
 `python3 -m torch.distributed.launch --nproc_per_node=1 radar_dino_training.py --data_path ../radar_dino_test/KHTX/gridnc --output_dir /path/to/your/model/ --use_fp16 false`
 
 By default, Radar-DINO selects reflectivity at 2 km altitude, clips reflectivity to 10-75 dBZ, maps original NaNs and reflectivity outside 10-75 dBZ to -1.0 after normalization across all channels, and tokenizes with 5x5 grid-cell patches. On the KHTX 1 km horizontal grid, this gives 5x5 km ViT patches. On the field-token `wip` architecture, `--channel_nan_prob` controls asymmetric student-field masking while teacher crops retain all fields.
+
+The released `radar-dino-fieldtoken-v1` artifact has its own versioned contract:
+a 300x300 input, 10x10 grid-cell patches, five fields, and a positional table
+initialized at the DINO default size and interpolated during inference. The
+artifact manifest, rather than the training CLI defaults, is authoritative.
 
 ## Running inference to obtain Radar-DINO's features
 

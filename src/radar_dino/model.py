@@ -337,3 +337,29 @@ class RadarDINO:
         if self.catalog is None:
             raise RuntimeError("This model artifact does not include a reference catalog")
         return self.catalog.predict_cluster(feature)
+
+    def save_plots(
+        self,
+        result: RadarDINOResult,
+        output_directory: str | Path,
+        *,
+        dpi: int = 200,
+    ) -> dict[str, Path]:
+        """Save field-attention, UMAP, and t-SNE PNG files when available."""
+
+        from .plotting import save_analysis_plots
+
+        radar_fields = None
+        if result.attention is not None:
+            sample = self.load(result.path, fields=result.fields)
+            radar_fields = {
+                field: sample.tensor[index].cpu().numpy()
+                for index, field in enumerate(sample.fields)
+            }
+        return save_analysis_plots(
+            result,
+            self.catalog,
+            output_directory,
+            radar_fields=radar_fields,
+            dpi=dpi,
+        )

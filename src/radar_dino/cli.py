@@ -23,6 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--device", default="auto")
     analyze.add_argument("--output", type=Path, required=True)
     analyze.add_argument("--no-attention", action="store_true")
+    analyze.add_argument(
+        "--plots",
+        action="store_true",
+        help="Save attention, UMAP, and t-SNE PNG files",
+    )
+    analyze.add_argument("--plot-dpi", type=int, default=200)
 
     export = subparsers.add_parser(
         "export",
@@ -66,6 +72,11 @@ def main(argv: list[str] | None = None) -> int:
         np.save(args.output / "umap.npy", result.umap)
     if result.tsne is not None:
         np.save(args.output / "tsne.npy", result.tsne)
+    plot_files = (
+        dino.save_plots(result, args.output, dpi=args.plot_dpi)
+        if args.plots
+        else {}
+    )
     summary = {
         "model_id": dino.config.model_id,
         "source": str(result.path),
@@ -85,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         "cluster": result.cluster,
         "cluster_probability": result.cluster_probability,
         "neighbors": list(result.neighbors),
+        "plots": {name: path.name for name, path in plot_files.items()},
     }
     with (args.output / "result.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2)
