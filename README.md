@@ -215,16 +215,18 @@ training metrics in `log.txt`. Relaunching with the same output directory
 automatically resumes from `checkpoint.pth`, including student, teacher,
 optimizer, DINO loss, epoch, and mixed-precision scaler state.
 
-On Polaris, copy and adapt
-[`examples/pbs/train_radar_dino_fieldtoken.pbs`](examples/pbs/train_radar_dino_fieldtoken.pbs),
-then submit it with:
+On a PBS-based cluster, copy and adapt
+[`examples/pbs/train_radino.pbs`](examples/pbs/train_radino.pbs), then submit it
+with:
 
 ```bash
-qsub examples/pbs/train_radar_dino_fieldtoken.pbs
+qsub examples/pbs/train_radino.pbs
 ```
 
-The PBS file uses the SSL-SULI2026 allocation, required home and Eagle
-filesystems, the capacity queue, and all four GPUs on one Polaris node.
+The supplied example targets Polaris and requests one complete node with four
+GPUs. Account, queue, filesystem, environment-module, and storage settings must
+be adapted for another PBS installation. The complete setup and submission
+workflow is described below.
 
 ### Matching checkpoint inference
 
@@ -276,37 +278,151 @@ python3 post_processing_utilities/visualize_attention.py \
   --output_dir /path/to/attention_output
 ```
 
-## Sample PBS jobs
+## Running on a PBS-based HPC system
 
-The Polaris examples target the field-token implementation on `main`:
+The repository includes three example jobs for the field-token implementation
+on `main`:
 
-- [`examples/pbs/train_radar_dino_fieldtoken.pbs`](examples/pbs/train_radar_dino_fieldtoken.pbs)
-- [`examples/pbs/infer_radar_dino_fieldtoken.pbs`](examples/pbs/infer_radar_dino_fieldtoken.pbs)
-- [`examples/pbs/assoc_infer_radar_dino_fieldtoken.pbs`](examples/pbs/assoc_infer_radar_dino_fieldtoken.pbs)
+- [`examples/pbs/train_radino.pbs`](examples/pbs/train_radino.pbs): train or
+  resume a model.
+- [`examples/pbs/infer_radino.pbs`](examples/pbs/infer_radino.pbs): extract
+  features and save a capped set of attention plots.
+- [`examples/pbs/assoc_infer_radino.pbs`](examples/pbs/assoc_infer_radino.pbs):
+  extract features together with source filenames and paths for a reference
+  catalog.
 
-Update the checkout from a Polaris login node before submitting:
+These are working Polaris examples, not scheduler-independent scripts. PBS
+resource syntax and site software differ between clusters, so a new user should
+copy a job and review its header before submitting it. In particular:
+
+| Setting | Polaris example | What another site must supply |
+| --- | --- | --- |
+| Allocation | `#PBS -A SSL-SULI2026` | Project or allocation name |
+| Nodes | `#PBS -l select=1:system=polaris` | Syntax for one GPU node |
+| Queue | `capacity` or `preemptable` | An accessible GPU queue |
+| Filesystems | `home:eagle` | Site storage resources, or remove this directive |
+| Environment | ALCF `conda` module | Site CUDA/PyTorch module or environment |
+| Storage | `/eagle/SSL-SULI2026/$USER` | High-throughput project or scratch storage |
+
+Each job uses one node and starts four processes with
+`torchrun --nnodes=1 --nproc_per_node=4`, one process per GPU. If a node at
+another site exposes a different number of GPUs, change both the PBS GPU
+request and `NPROC_PER_NODE` in the copied script. The examples are not
+configured for multi-node rendezvous.
+
+### 1. Clone the code
+
+Run setup commands on the cluster login node:
 
 ```bash
+cd "$HOME"
+git clone https://github.com/DanielWefer/radar_dino.git
 git -C "$HOME/radar_dino" switch main
 git -C "$HOME/radar_dino" pull --ff-only
 ```
 
-Their defaults expect the repository at `$HOME/radar_dino`, data at
-`/eagle/SSL-SULI2026/$USER/gridnc_gt10pct`, and the trained checkpoint at
-`/eagle/SSL-SULI2026/$USER/radar_train_fieldtoken/model/checkpoint.pth`.
-Each job verifies that the checkout is on `main`, the field-token code and
-entry point exist, the Python and NetCDF dependencies load, four GPUs are
-visible, and the required data or checkpoint exists before launching
-`torchrun`.
+### 2. Create and install the Python environment
 
-Change `#PBS -A SSL-SULI2026` if using another allocation. Paths can be changed
-in a copied script or overridden at submission time, for example:
+The PBS jobs do not install packages. They expect a prepared Python environment
+containing a CUDA-compatible PyTorch build and the Radar-DINO dependencies. On
+Polaris, the intended starting point is the ALCF-provided Conda environment:
 
 ```bash
-qsub -v RADAR_DINO_REPO_DIR=/path/to/radar_dino,RADAR_DINO_DATA_DIR=/path/to/gridnc \
-  examples/pbs/train_radar_dino_fieldtoken.pbs
+module use /soft/modulefiles
+module load conda
+conda activate base
+
+python -m venv --system-site-packages /eagle/SSL-SULI2026/$USER/venvs/radar-dino
+source /eagle/SSL-SULI2026/$USER/venvs/radar-dino/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e "$HOME/radar_dino[netcdf,hub,analysis,plot,dev]"
+python -m pip check
 ```
 
-Regular inference limits attention output to 20 scans by default. Override that
-with `RADAR_DINO_MAX_ATTENTION_PLOTS` or disable attention plotting in a copied
-job when running a large catalog.
+Using `--system-site-packages` allows the virtual environment to reuse the
+site-supported GPU PyTorch build. On another cluster, use that site's
+recommended CUDA/PyTorch module or container instead.
+
+If dependencies were installed into a virtual environment, add its `source`
+command after `conda activate` in each copied PBS file. Activating an
+environment in the login shell does not automatically activate it in a later
+batch job. Before a full run, verify imports and GPU visibility in an
+interactive GPU allocation:
+
+```bash
+python -c "import torch, torchvision, xarray, radar_dino; print(torch.__version__)"
+python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.device_count())"
+```
+
+### 3. Place data and outputs on cluster storage
+
+Training recursively searches the data directory for `.nc` files. Keep the
+repository in home storage if convenient, but place large NetCDF collections,
+checkpoints, features, and plots on the site's project or scratch filesystem.
+The Polaris defaults are:
+
+```text
+repository:  $HOME/radar_dino
+data:        /eagle/SSL-SULI2026/$USER/gridnc_gt10pct
+training:    /eagle/SSL-SULI2026/$USER/radar_train_fieldtoken
+checkpoint:  /eagle/SSL-SULI2026/$USER/radar_train_fieldtoken/model/checkpoint.pth
+features:    /eagle/SSL-SULI2026/$USER/radar/features_fieldtoken
+catalog:     /eagle/SSL-SULI2026/$USER/radar/assoc_features_fieldtoken
+```
+
+Confirm that at least one input file is visible before submission:
+
+```bash
+find -L /path/to/gridnc -type f -name '*.nc' | wc -l
+```
+
+### 4. Adapt and submit the jobs
+
+Copy the examples before changing site-specific PBS directives or environment
+activation:
+
+```bash
+cp examples/pbs/train_radino.pbs train_radino.pbs
+cp examples/pbs/infer_radino.pbs infer_radino.pbs
+cp examples/pbs/assoc_infer_radino.pbs assoc_infer_radino.pbs
+```
+
+The data and output locations can be edited in those copies or supplied through
+environment variables. For example:
+
+```bash
+qsub -v RADAR_DINO_REPO_DIR="$HOME/radar_dino",RADAR_DINO_DATA_DIR="/path/to/gridnc",RADAR_DINO_RUN_DIR="/path/to/training-run" \
+  train_radino.pbs
+```
+
+For a first test, use the site's debug queue, a short walltime, one epoch, and a
+small NetCDF subset. After it passes, submit the full training job. Monitor it
+with the PBS tools and the log written under the run directory:
+
+```bash
+qstat -u "$USER"
+qstat -f JOB_ID
+tail -f /path/to/training-run/logs/JOB_ID.log
+tail -f /path/to/training-run/model/log.txt
+```
+
+Training writes a rolling `checkpoint.pth`, numbered checkpoint snapshots, and
+`log.txt`. Submitting the same training command with the same output directory
+resumes from the rolling checkpoint, including the model, optimizer, epoch,
+DINO loss, and mixed-precision scaler state.
+
+After training, provide `RADAR_DINO_MODEL_PATH` when the checkpoint is not at
+the Polaris default location:
+
+```bash
+qsub -v RADAR_DINO_REPO_DIR="$HOME/radar_dino",RADAR_DINO_DATA_DIR="/path/to/gridnc",RADAR_DINO_MODEL_PATH="/path/to/checkpoint.pth",RADAR_DINO_FEATURE_DIR="/path/to/features" \
+  infer_radino.pbs
+
+qsub -v RADAR_DINO_REPO_DIR="$HOME/radar_dino",RADAR_DINO_DATA_DIR="/path/to/gridnc",RADAR_DINO_MODEL_PATH="/path/to/checkpoint.pth",RADAR_DINO_ASSOC_FEATURE_DIR="/path/to/associated-features" \
+  assoc_infer_radino.pbs
+```
+
+Regular inference saves `feat.pth` and limits attention output to 20 scans by
+default. Change `RADAR_DINO_MAX_ATTENTION_PLOTS` to adjust the cap. Associative
+inference saves `feat.pth`, `file_name.pth`, and `file_path.pth`; use those
+matched outputs when constructing a searchable reference catalog.
