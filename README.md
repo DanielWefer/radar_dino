@@ -6,9 +6,9 @@ This project is based in the [original DINO](https://github.com/facebookresearch
 
 ## Python package
 
-The `wip` field-token architecture is now exposed through an installable
-`radar_dino` package. Each radar field receives its own patch-token sequence and
-learned field embedding. A released model artifact contains:
+The custom field-token architecture is now the `main` training and inference
+path and is exposed through the installable `radar_dino` package. Each radar
+field receives its own patch-token sequence and learned field embedding. A released model artifact contains:
 
 - `manifest.json`: the exact field order, normalization, altitude, input size,
   patch size, and architecture used during training.
@@ -135,7 +135,7 @@ For test-driven changes:
 Tests that eventually require CUDA should use the `gpu` pytest marker and remain
 separate from the default CPU suite.
 
-## Training the WIP field-token model
+## Training the field-token model on `main`
 
 The current training path is `radar_dino_training.py`. Unlike the original
 mixed-channel image tokenizer, it projects every radar field independently
@@ -145,7 +145,8 @@ spatial patch location.
 
 ### Training data contract
 
-Training recursively reads regridded NetCDF files. The reproduced WIP run uses this exact field order:
+Training recursively reads regridded NetCDF files. The reference main-branch
+run uses this exact field order:
 
 | Field | Clipping range |
 | --- | ---: |
@@ -157,14 +158,14 @@ Training recursively reads regridded NetCDF files. The reproduced WIP run uses t
 
 Each field is clipped and normalized to `[0, 1]`, and its original NaNs are
 set to `--radar_nan_fill`. At locations where reflectivity is missing or outside
-10-75 dBZ, every field is set to that sentinel (`-1.0` in the WIP run). The job
-selects the grid level nearest 2000 m. Use `--z_level none` only when column
+10-75 dBZ, every field is set to that sentinel (`-1.0` in the reference
+run). The job selects the grid level nearest 2000 m. Use `--z_level none` only when column
 maxima are intended.
 
 ### Crops, patches, and asymmetric masking
 
-The WIP configuration uses 1 km grid spacing, 300 km global crops, 100 km local
-crops, and 10x10 grid-cell patches. 
+The main configuration uses 1 km grid spacing, 300 km global crops, 100 km local
+crops, and 10x10 grid-cell patches.
 
 For every scan, the augmentation produces two global views and four local
 views. It applies independent horizontal and vertical flips, and may add
@@ -194,7 +195,7 @@ torchrun \
   --batch_size_per_gpu 1 \
   --num_workers 2 \
   --data_path /path/to/gridnc \
-  --output_dir /path/to/radar_train_wip_tokenized/model \
+  --output_dir /path/to/radar_train_fieldtoken/model \
   --saveckp_freq 1 \
   --radar_fields reflectivity specific_differential_phase differential_reflectivity cross_correlation_ratio spectrum_width \
   --in_chans 5 \
@@ -215,14 +216,15 @@ automatically resumes from `checkpoint.pth`, including student, teacher,
 optimizer, DINO loss, epoch, and mixed-precision scaler state.
 
 On Polaris, copy and adapt
-[`examples/pbs/wip_train.pbs`](examples/pbs/wip_train.pbs), then submit it with:
+[`examples/pbs/train_radar_dino_fieldtoken.pbs`](examples/pbs/train_radar_dino_fieldtoken.pbs),
+then submit it with:
 
 ```bash
-qsub examples/pbs/wip_train.pbs
+qsub examples/pbs/train_radar_dino_fieldtoken.pbs
 ```
 
-The published PBS file retains the original project allocation, filesystem
-paths, queue, and four-GPU configuration as a reference.
+The PBS file uses the SSL-SULI2026 allocation, required home and Eagle
+filesystems, the capacity queue, and all four GPUs on one Polaris node.
 
 ### Matching checkpoint inference
 
@@ -276,12 +278,35 @@ python3 post_processing_utilities/visualize_attention.py \
 
 ## Sample PBS jobs
 
-The original Polaris PBS jobs are published unchanged as reference templates:
+The Polaris examples target the field-token implementation on `main`:
 
-- [`examples/pbs/wip_train.pbs`](examples/pbs/wip_train.pbs)
-- [`examples/pbs/infer_radar_dino_wip_tokenized.pbs`](examples/pbs/infer_radar_dino_wip_tokenized.pbs)
-- [`examples/pbs/assoc_infer_radar_dino_wip_tokenized.pbs`](examples/pbs/assoc_infer_radar_dino_wip_tokenized.pbs)
+- [`examples/pbs/train_radar_dino_fieldtoken.pbs`](examples/pbs/train_radar_dino_fieldtoken.pbs)
+- [`examples/pbs/infer_radar_dino_fieldtoken.pbs`](examples/pbs/infer_radar_dino_fieldtoken.pbs)
+- [`examples/pbs/assoc_infer_radar_dino_fieldtoken.pbs`](examples/pbs/assoc_infer_radar_dino_fieldtoken.pbs)
 
-They retain the original allocation, queue, module, and filesystem paths so
-readers can see an authentic example. Users should copy a script and adapt
-those site-specific values and entry-point names for their own HPC environment.
+Update the checkout from a Polaris login node before submitting:
+
+```bash
+git -C "$HOME/radar_dino" switch main
+git -C "$HOME/radar_dino" pull --ff-only
+```
+
+Their defaults expect the repository at `$HOME/radar_dino`, data at
+`/eagle/SSL-SULI2026/$USER/gridnc_gt10pct`, and the trained checkpoint at
+`/eagle/SSL-SULI2026/$USER/radar_train_fieldtoken/model/checkpoint.pth`.
+Each job verifies that the checkout is on `main`, the field-token code and
+entry point exist, the Python and NetCDF dependencies load, four GPUs are
+visible, and the required data or checkpoint exists before launching
+`torchrun`.
+
+Change `#PBS -A SSL-SULI2026` if using another allocation. Paths can be changed
+in a copied script or overridden at submission time, for example:
+
+```bash
+qsub -v RADAR_DINO_REPO_DIR=/path/to/radar_dino,RADAR_DINO_DATA_DIR=/path/to/gridnc \
+  examples/pbs/train_radar_dino_fieldtoken.pbs
+```
+
+Regular inference limits attention output to 20 scans by default. Override that
+with `RADAR_DINO_MAX_ATTENTION_PLOTS` or disable attention plotting in a copied
+job when running a large catalog.
